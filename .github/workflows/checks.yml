@@ -1,0 +1,26 @@
+name: Tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test services
+        run: sudo apt-get update && sudo apt-get install -y screen openssh-sftp-server
+      - name: Python integration tests
+        env:
+          SCREENDESK_TEST_SCREEN: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s tests -v
+      - name: JavaScript mouse protocol tests
+        run: node tests/test_mouse.mjs
