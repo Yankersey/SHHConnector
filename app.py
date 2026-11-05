@@ -17,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import socketserver
 import struct
 import subprocess
 import tempfile
@@ -28,10 +29,10 @@ from transfers import TransferManager, SFTPError
 from ssh_config import read_profiles
 from platform_support import open_workspace
 from local_runtime import WINDOWS, background_options, open_terminal, system_ssh, try_lock
+from screen_catalog import SAFE_REF, matches_ref, parse_scan, scan_script, session_name, valid_name
 
 ROOT = Path(__file__).resolve().parent
 SSH = system_ssh()
-SAFE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 MAX_FRAME = 1024 * 1024
 
 
@@ -185,7 +186,7 @@ class ReadyFilter:
             end = self.pending.find(self.end, position + len(self.prefix))
             if end >= 0:
                 raw = self.pending[position + len(self.prefix):end]
-                ref = raw.decode("ascii", "replace")
+                ref = raw.decode("utf-8", "strict")
                 if not SAFE_REF.fullmatch(ref):
                     raise UserError("服务器返回了无效的 screen 标识")
                 result = self.pending[:position] + self.pending[end + len(self.end):]
@@ -225,6 +226,8 @@ class Workspace:
         self.active_profile = None
         self.active_forwarding = None
         self.connections = {}
+        self.ignored_screens = {}
+        self.screen_scans = {}
         if WINDOWS:
             from windows_tunnels import NativeTunnels
             self.native_tunnels = NativeTunnels(self)
@@ -241,6 +244,12 @@ class Workspace:
                 saved = json.loads(self.state_file.read_text(encoding="utf-8"))
                 self.profiles = [clean_profile(p, p["id"]) for p in saved.get("profiles", [])]
                 self.records = saved.get("sessions", [])
+                self.ignored_screens = saved.get("ignored_screens", {})
+                if (not isinstance(self.ignored_screens, dict) or
+                    any(not isinstance(key, str) or not isinstance(refs, list) or
+                        any(not isinstance(ref, str) or len(ref) > 240 for ref in refs)
+                        for key, refs in self.ignored_screens.items())):
+                    raise ValueError("invalid ignored screens")
                 for r in self.records:
                     if not SAFE_REF.fullmatch(r["remote_name"]):
                         raise ValueError("invalid saved screen name")
@@ -266,7 +275,8 @@ class Workspace:
 
     def save(self):
         with self.lock:
-            raw = json.dumps(dict(version=1, profiles=self.profiles, sessions=self.records),
+            raw = json.dumps(dict(version=1, profiles=self.profiles, sessions=self.records,
+                                  ignored_screens=self.ignored_screens),
                              ensure_ascii=False, indent=2)
             temporary = self.state_file.with_suffix(".tmp")
             fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -406,28 +416,99 @@ class Workspace:
             if len([r for r in self.records if r["state"] != "ended"]) >= 64:
                 raise UserError("最多保留 64 个会话，请先移除不用的会话记录")
             name = str(data.get("name", "")).strip()
-            if not name or len(name) > 64 or any(ord(c) < 32 for c in name):
+            if not valid_name(name):
                 raise UserError("请为窗口命名，长度为 1–64 个字符")
             profile = next((p for p in self.profiles if p["id"] == data.get("profile_id")), None)
             if not profile:
                 raise UserError("请先添加并选择服务器")
             existing = str(data.get("screen_ref", "")).strip()
             if existing and not SAFE_REF.fullmatch(existing):
-                raise UserError("已有 screen 标识仅支持字母、数字、点、横线和下划线")
-            if existing and any(r["state"] != "ended" and r["profile"] == profile and
-                                (r.get("screen_ref") or r["remote_name"]) == existing
+                raise UserError("已有 screen 标识含不支持的字符，请从扫描结果中选择")
+            if existing and any(r["state"] != "ended" and r["profile_id"] == profile["id"] and
+                                matches_ref(r.get("screen_ref") or r["remote_name"], existing)
                                 for r in self.records):
                 raise UserError("这个 screen 已经在侧栏中，请从侧栏重新连接")
             identifier = uuid.uuid4().hex
-            slug = re.sub(r"[^A-Za-z0-9_-]", "_", name).strip("_")[:24] or "session"
+            try:
+                remote_name = existing or session_name(name, identifier)
+            except ValueError as exc:
+                raise UserError(str(exc)) from exc
             record = dict(id=identifier, name=name, profile_id=profile["id"], profile=dict(profile),
-                          remote_name=existing or "sd_%s_%s" % (slug, identifier[:12]),
+                          remote_name=remote_name,
                           screen_ref=existing, ever_ready=bool(existing), state="detached" if existing else "new",
                           created_at=time.time(), forwarding=forwarding,
                           remote_mouse=False, layout=clean_layout(data.get("layout", {})))
             self.records.append(record)
             self.save()
             return dict(record)
+
+    def scan_screens(self, profile_id, forwarding):
+        if not isinstance(forwarding, bool):
+            raise UserError("请选择本次转发方式")
+        profile = self.require_active(profile_id, forwarding)
+        marker = secrets.token_hex(16)
+        command = remote_deadline_shell() + scan_script(marker)
+        try:
+            result = subprocess.run(self.ssh_args(profile, True, forwarding) + [command],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    timeout=15, **background_options())
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise UserError("扫描未完成，本机会话记录保持不变：" + str(exc)) from exc
+        output = result.stdout.decode("utf-8", "replace")
+        if result.returncode:
+            raise UserError("扫描失败，本机会话记录保持不变。\n" + output.strip()[-1600:])
+        try:
+            entries, notes = parse_scan(output.replace("\r\n", "\n"), marker)
+        except ValueError as exc:
+            raise UserError(str(exc)) from exc
+        with self.lock:
+            ignored = set(self.ignored_screens.get(profile_id, []))
+            for entry in entries:
+                ref = entry["screen_ref"]
+                entry["added"] = any(r["state"] != "ended" and r["profile_id"] == profile_id and
+                                     matches_ref(r.get("screen_ref") or r["remote_name"], ref) for r in self.records)
+                entry["ignored"] = ref in ignored
+            self.screen_scans[profile_id] = dict(id=marker, created=time.monotonic(), profile=dict(profile),
+                                                entries={e["screen_ref"]: dict(e) for e in entries}, forwarding=forwarding)
+        return dict(scan_id=marker, profile_id=profile_id, entries=entries, notes=notes)
+
+    def discovered_screen(self, data):
+        scan = self.screen_scans.get(data.get("profile_id"))
+        if not scan or scan["id"] != data.get("scan_id") or time.monotonic()-scan["created"] > 300:
+            raise UserError("扫描结果已过期，请重新扫描")
+        self.require_active(data.get("profile_id"), scan["forwarding"], scan["profile"])
+        entry = scan["entries"].get(data.get("screen_ref"))
+        if not entry:
+            raise UserError("找不到这个扫描结果，请重新扫描")
+        return scan, entry
+
+    def add_discovered_screen(self, data):
+        with self.lock:
+            scan, entry = self.discovered_screen(data)
+            if not entry["addable"]:
+                raise UserError(entry["reason"] or "这个 screen 无法添加")
+            record = self.new_session(dict(profile_id=data["profile_id"], name=entry["name"][:64],
+                                           screen_ref=entry["screen_ref"], forwarding=scan["forwarding"],
+                                           layout={"visible": True}))
+            entry["added"] = True
+            return record
+
+    def ignore_discovered_screen(self, data):
+        if not isinstance(data.get("ignored"), bool):
+            raise UserError("请选择忽略或取消忽略")
+        with self.lock:
+            unused, entry = self.discovered_screen(data)
+            refs = set(self.ignored_screens.get(data["profile_id"], []))
+            if data["ignored"]:
+                if len(refs) >= 2048 and entry["screen_ref"] not in refs:
+                    raise UserError("已忽略记录过多，请先取消部分忽略")
+                refs.add(entry["screen_ref"])
+            else:
+                refs.discard(entry["screen_ref"])
+            self.ignored_screens[data["profile_id"]] = sorted(refs)
+            entry["ignored"] = data["ignored"]
+            self.save()
+        return dict(ok=True)
 
     def control(self, record, action):
         ref = record.get("screen_ref") or record["remote_name"]
@@ -512,14 +593,18 @@ case "$pid" in ''|*[!0-9]*) ;; *)
     def forget_session(self, identifier):
         with self.lock:
             record = self.record(identifier)
-            terminal = self.terminals.get(identifier)
-        if terminal:
-            terminal.event(type="exit", state="detached")
-            terminal.stop()
-        with self.lock:
-            if record in self.records:
-                self.records.remove(record)
+            terminal = self.terminals.pop(identifier, None)
+            self.records.remove(record)
             self.save()
+        # Removing a local record never waits for SSH, screen, or a blocked
+        # local terminal writer. Cleanup continues independently of the API.
+        if terminal:
+            def cleanup():
+                try:
+                    terminal.event(type="exit", state="detached")
+                finally:
+                    terminal.stop()
+            threading.Thread(target=cleanup, daemon=True).start()
         return dict(ok=True)
 
     def close_session(self, identifier, action):
@@ -842,6 +927,14 @@ class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def server_bind(self):
+        # This service only accepts a literal loopback address. HTTPServer's
+        # reverse DNS lookup is unnecessary and can stall macOS startup when
+        # its resolver is unavailable or slow.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
     def __init__(self, port, workspace):
         super().__init__(("127.0.0.1", port), Handler)
         self.workspace = workspace
@@ -972,6 +1065,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/sessions":
                 workspace.require_active(data.get("profile_id"))
                 return self.response(200, workspace.new_session(data))
+            if path == "/api/screens/scan":
+                return self.response(200, workspace.scan_screens(data.get("profile_id"), data.get("forwarding")))
+            if path == "/api/screens/add":
+                return self.response(200, workspace.add_discovered_screen(data))
+            if path == "/api/screens/ignore":
+                return self.response(200, workspace.ignore_discovered_screen(data))
             match = re.fullmatch(r"/api/sessions/([0-9a-f]{32})/(close|layout|forget|diagnose|options|check)", path)
             if match:
                 identifier, action = match.groups()

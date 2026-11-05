@@ -10,6 +10,7 @@ let profiles = [], sessions = [], selectedProfile = null, zIndex = 10, selectedW
 let pendingNew = false, closeTarget = null, shuttingDown = false, activeForwarding = null;
 let filePage = null, fileProfile = null, fileForwarding = false, fileBusy = false;
 let downloadsTimer = null;
+let screenScan = null, scanBusy = false, scanSerial = 0;
 const profilePolicies = new Map();
 const connections = new Map();
 function currentSessions(){return sessions.filter(r=>r.profile_id===selectedProfile&&r.state!=='ended');}
@@ -91,7 +92,7 @@ function renderSidebar() {
     const title = el('div','session-card-title'); title.append(el('i','state-dot '+record.state),el('strong','',record.name));
     const sub = el('div','session-card-sub'); sub.append(el('span','',record.profile.name),el('span','',stateNames[record.state] || record.state));
     {
-      const forget = el('button','','移除记录'); forget.title='只移除本机记录；若已连接，只分离本机，不结束远程 screen';
+      const forget = el('button','','删除本机记录'); forget.title='服务器无响应也可删除；只清理本机，不发送远程结束或分离命令';
       forget.onclick = async event => { event.stopPropagation(); try { await forgetRecord(record.id); } catch(error) { toast(error.message,true); } };
       sub.append(forget);
     }
@@ -105,7 +106,7 @@ function renderSidebar() {
   $('#live-count').textContent=connected+' 个连接';
   $('#workspace-summary').textContent=currentWindows().length ? currentWindows().length+' 个窗口 · '+connected+' 个连接' : '尚未打开窗口';
   $('#empty-state').hidden=currentWindows().length>0;
-  const profile=profiles.find(p=>p.id===selectedProfile);$('#connection-label').textContent=profile?profile.name+' · '+profile.host:'终端工作台';$('#connection-state').textContent=connections.has(selectedProfile)?'连接保留':'未连接';$('#close-server').disabled=!profile;
+  const profile=profiles.find(p=>p.id===selectedProfile);$('#connection-label').textContent=profile?profile.name+' · '+profile.host:'终端工作台';$('#connection-state').textContent=connections.has(selectedProfile)?'连接保留':'未连接';$('#close-server').disabled=!profile;$('#scan-screens').disabled=!profile;
 }
 
 function openServer(profile = null) {
@@ -282,6 +283,36 @@ function startDrag(event,win,direction){
 }
 function destroyWindow(id){const win=windows.get(id);if(!win)return;clearTimeout(win.saveTimer);clearInterval(win.heartbeat);win.ws?.close();win.term.dispose();win.element.remove();windows.delete(id);if(selectedWindow===id)selectedWindow=null;updateCanvas();renderSidebar();}
 async function forgetRecord(id){const win=windows.get(id);if(win)clearTimeout(win.saveTimer);await api('/api/sessions/'+id+'/forget',{});sessions=sessions.filter(r=>r.id!==id);destroyWindow(id);renderSidebar();}
+function renderScreenScan(){
+  const list=$('#screen-scan-results');list.replaceChildren();if(!screenScan)return;
+  const entries=screenScan.entries,showIgnored=$('#show-ignored-screens').checked;
+  const visible=entries.filter(entry=>showIgnored||!entry.ignored);
+  $('#screen-scan-summary').textContent='共 '+entries.length+' 个 screen · '+entries.filter(e=>e.added).length+' 个已在本机 · '+entries.filter(e=>e.ignored).length+' 个已忽略';
+  if(!visible.length)list.append(el('p','dialog-description',entries.length?'其余会话已忽略，勾选“显示已忽略”可恢复。':'这个 SSH 账号当前没有 screen。'));
+  for(const entry of visible){
+    const row=el('div','session-check-row screen-scan-row'),heading=el('div','download-heading');
+    const name=el('strong','',entry.name),status=el('span','',{attached:'已附加',detached:'已分离',dead:'失效 socket',unknown:'状态未知'}[entry.state]||entry.status);
+    heading.append(name,status);const ref=el('div','screen-scan-ref',entry.screen_ref);
+    const message=el('div','download-message',entry.reason||(entry.managed?'按命名规则识别，名称与另一台电脑保持一致。':'普通 screen，可手动添加到本机。'));
+    const actions=el('div','download-actions'),add=el('button','secondary-button',entry.added?'已在本机':'添加到本机'),ignore=el('button','secondary-button',entry.ignored?'取消忽略':'忽略');
+    add.disabled=entry.added||!entry.addable||entry.ignored;
+    const context={profile_id:screenScan.profile.id,scan_id:screenScan.scan_id,screen_ref:entry.screen_ref};
+    add.onclick=async()=>{add.disabled=true;try{const record=await api('/api/screens/add',context);sessions.push(record);entry.added=true;if(selectedProfile===record.profile_id)await openSession(record,false);renderSidebar();renderScreenScan();toast('已添加“'+record.name+'”；点击重新连接才会连接服务器。');}catch(error){toast(error.message,true);add.disabled=entry.added||!entry.addable||entry.ignored;}};
+    ignore.onclick=async()=>{ignore.disabled=true;try{await api('/api/screens/ignore',{...context,ignored:!entry.ignored});entry.ignored=!entry.ignored;renderScreenScan();}catch(error){toast(error.message,true);ignore.disabled=false;}};
+    actions.append(add,ignore);row.append(heading,ref,message,actions);list.append(row);
+  }
+}
+async function runScreenScan(profile,forwarding){
+  const serial=++scanSerial,dialog=$('#screen-scan-dialog');scanBusy=true;screenScan=null;
+  $('#screen-scan-results').replaceChildren();$('#screen-scan-summary').textContent='正在扫描…';$('#screen-scan-title').textContent='服务器 screen · '+profile.name;
+  $('#refresh-screen-scan').disabled=true;clearError(dialog);if(!dialog.open)showDialog(dialog);
+  try{const data=await api('/api/screens/scan',{profile_id:profile.id,forwarding});if(serial!==scanSerial)return;screenScan={...data,profile,forwarding};renderScreenScan();if(data.notes?.length)errorIn(dialog,data.notes.join('\n'));}
+  catch(error){if(serial===scanSerial){$('#screen-scan-summary').textContent='扫描未完成；本机记录保持不变。';errorIn(dialog,error);}}
+  finally{if(serial===scanSerial){scanBusy=false;$('#refresh-screen-scan').disabled=false;}}
+}
+$('#scan-screens').onclick=async()=>{const profile=profiles.find(p=>p.id===selectedProfile);if(!profile||scanBusy)return;try{const policy=await ensureConnection(profile);if(policy!==null)await runScreenScan(profile,policy);}catch(error){toast(error.message,true);}};
+$('#refresh-screen-scan').onclick=async()=>{if(scanBusy)return;const profile=screenScan?.profile||profiles.find(p=>p.id===selectedProfile);if(!profile)return;try{const policy=screenScan?.forwarding??await ensureConnection(profile);if(policy!==null)await runScreenScan(profile,policy);}catch(error){toast(error.message,true);}};
+$('#show-ignored-screens').onchange=renderScreenScan;
 $('#verify-sessions').onclick=async()=>{
   const records=currentSessions().slice(),list=$('#session-check-results');list.replaceChildren();showDialog($('#session-check-dialog'));
   if(!records.length){list.append(el('p','dialog-description','当前服务器没有本机会话记录。'));return;}
@@ -305,11 +336,15 @@ $('#verify-sessions').onclick=async()=>{
 };
 function openClose(win){closeTarget=win;$('#close-title').textContent='关闭“'+win.record.name+'”';$('#close-description').textContent='请选择服务器上这个 screen 的处理方式。';$('#terminate-button').disabled=!win.record.ever_ready;showDialog($('#close-dialog'));}
 async function closeWindow(action){
-  const win=closeTarget;if(!win)return;const dialog=$('#close-dialog');$$('.close-choice',dialog).forEach(b=>b.disabled=true);clearError(dialog);clearTimeout(win.saveTimer);
+  const win=closeTarget;if(!win)return;const dialog=$('#close-dialog');$$('.close-choice:not(.local-record-choice)',dialog).forEach(b=>b.disabled=true);clearError(dialog);clearTimeout(win.saveTimer);
   try{const record=await api('/api/sessions/'+win.record.id+'/close',{action});Object.assign(win.record,record);destroyWindow(record.id);dialog.close();toast(action==='detach'?'已分离；远程任务继续运行。':'screen 已结束。');}
-  catch(error){errorIn(dialog,error);}finally{$$('#close-dialog .close-choice').forEach(b=>b.disabled=false);}
+  catch(error){errorIn(dialog,error);}finally{$$('#close-dialog .close-choice:not(.local-record-choice)').forEach(b=>b.disabled=false);if(closeTarget===win)$('#terminate-button').disabled=!win.record.ever_ready;}
 }
 $('#detach-button').onclick=()=>closeWindow('detach');$('#terminate-button').onclick=()=>closeWindow('terminate');
+const localDelete=el('button','close-choice local-record-choice');localDelete.id='forget-button';
+const localDeleteText=el('span');localDeleteText.append(el('strong','','仅删除本机记录'),el('small','','服务器无响应、screen 卡住或创建失败时也可删除。远程 screen 和任务保持不变。'));
+localDelete.append(el('span','choice-icon','⌫'),localDeleteText,el('span','choice-arrow','→'));$('#terminate-button').after(localDelete);
+localDelete.onclick=async()=>{const win=closeTarget;if(!win)return;localDelete.disabled=true;try{await forgetRecord(win.record.id);if(closeTarget===win)$('#close-dialog').close();toast('本机记录已删除；未发送远程 screen 控制命令。');}catch(error){errorIn($('#close-dialog'),error);}finally{localDelete.disabled=false;}};
 function renderServerChoices(){
   const list=$('#server-session-choices');list.replaceChildren();
   for(const record of currentSessions()){

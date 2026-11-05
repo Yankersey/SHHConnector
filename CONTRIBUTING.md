@@ -20,7 +20,7 @@ git push
 
 另一台电脑退出旧程序后再运行启动器，会拉取 origin/main 的新提交。两台电脑不应同时修改同一分支并假定 Git 会自动解决冲突；本地有修改、未推送提交或分支分叉时，启动器会保留它们并停止自动更新。
 
-发布前检查 GitHub Actions 的 Tests 流程。每次推送 / PR 在 Ubuntu + Python 3.9 / 3.12 运行实际 screen / SFTP 集成测试，并在 Windows + Python 3.9 / 3.13 运行 ConPTY、管道、共享转发、单实例与更新保护测试。
+发布前检查 GitHub Actions 的 Tests 流程。每次推送 / PR 在 Ubuntu + Python 3.9 / 3.12 和 macOS + Python 3.12 运行实际 screen / SFTP 集成测试，并在 Windows + Python 3.9 / 3.13 运行 ConPTY、管道、共享转发、单实例与更新保护测试。命名与扫描协议、忽略恢复和本机删除测试在所有平台执行。
 
 ## 本机数据
 

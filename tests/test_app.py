@@ -270,6 +270,33 @@ class AppTests(unittest.TestCase):
         self.assertEqual(result['status'],'missing');self.assertEqual(record['state'],'ended')
         self.assertNotIn(record['id'],[r['id'] for r in self.ws.snapshot()['sessions']])
 
+    @unittest.skipUnless(os.environ.get('SCREENDESK_TEST_SCREEN')=='1','requires isolated real screen')
+    def test_15_two_workspaces_discover_the_same_server_names(self):
+        directory=Path(tempfile.mkdtemp(prefix='sds-',dir='/tmp'))
+        previous=os.environ.get('SCREENDIR');os.environ['SCREENDIR']=str(directory)
+        other=app.Workspace(self.temp/'other-machine'/'data',ssh_config=False)
+        other.profiles.append(dict(self.profile))
+        other.activate(self.profile['id'],False)
+        record=self.ws.record(self.session()['id'])
+        self.ws.activate(self.profile['id'],False)
+        try:
+            subprocess.run(['screen','-U','-d','-m','-S',record['remote_name'],'sh','-c','sleep 60'],check=True)
+            wait_for(lambda:record['remote_name'].encode() in subprocess.run(['screen','-ls'],capture_output=True).stdout)
+            scanned=other.scan_screens(self.profile['id'],False)
+            entry=next(e for e in scanned['entries'] if e['name']==record['name'])
+            self.assertTrue(entry['managed']);self.assertEqual(entry['state'],'detached')
+            added=other.add_discovered_screen(dict(profile_id=self.profile['id'],scan_id=scanned['scan_id'],screen_ref=entry['screen_ref']))
+            self.assertEqual(added['name'],record['name']);self.assertEqual(added['state'],'detached')
+            self.assertFalse(other.terminals)
+            other.forget_session(added['id'])
+            self.assertIn(record['remote_name'].encode(),subprocess.run(['screen','-ls'],capture_output=True).stdout)
+        finally:
+            other.shutdown()
+            subprocess.run(['screen','-S',record['remote_name'],'-X','quit'],capture_output=True)
+            if previous is None:os.environ.pop('SCREENDIR',None)
+            else:os.environ['SCREENDIR']=previous
+            shutil.rmtree(directory,ignore_errors=True)
+
     def test_14_forget_active_record_detaches_without_remote_quit(self):
         record=self.ws.record(self.session()['id'])
         class StubTerminal:
@@ -280,7 +307,7 @@ class AppTests(unittest.TestCase):
         with mock.patch.object(self.ws,'control') as control:
             self.ws.forget_session(record['id'])
             control.assert_not_called()
-        self.assertTrue(terminal.stopped)
+        wait_for(lambda:terminal.stopped)
         self.assertNotIn(record['id'],[r['id'] for r in self.ws.records])
         restored=app.Workspace(self.temp/'data',ssh_config=False)
         try:self.assertNotIn(record['id'],[r['id'] for r in restored.records])

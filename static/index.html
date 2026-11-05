@@ -31,7 +31,7 @@
       <div class="breadcrumb"><strong id="connection-label">终端工作台</strong><span id="connection-state"></span></div>
       <div class="topbar-actions"><span class="private-label"><i></i> 仅本机访问</span><button class="text-button" id="exit-app">退出程序</button></div>
     </header>
-    <div class="workspace-toolbar"><div class="view-label"><span>▦</span><span id="workspace-summary">尚未打开窗口</span></div><div class="workspace-controls"><button class="text-button" id="verify-sessions">核对会话</button><button class="text-button" id="tile-windows">平铺</button><button class="text-button" id="cascade-windows">层叠</button><button class="text-button danger-text" id="close-server">关闭服务器</button><button class="primary-button" id="new-window">＋ 新建窗口</button></div></div>
+    <div class="workspace-toolbar"><div class="view-label"><span>▦</span><span id="workspace-summary">尚未打开窗口</span></div><div class="workspace-controls"><button class="text-button" id="scan-screens">扫描服务器 screen</button><button class="text-button" id="verify-sessions">核对会话</button><button class="text-button" id="tile-windows">平铺</button><button class="text-button" id="cascade-windows">层叠</button><button class="text-button danger-text" id="close-server">关闭服务器</button><button class="primary-button" id="new-window">＋ 新建窗口</button></div></div>
     <section id="viewport" class="viewport" aria-label="可自由布局的终端窗口">
       <div id="canvas" class="canvas">
         <div id="empty-state" class="empty-state"><button class="secondary-button" id="empty-new">＋ 新建终端窗口</button></div>
@@ -54,6 +54,7 @@
   <dialog id="close-server-dialog"><div class="dialog-heading"><h2 id="close-server-title">关闭服务器</h2><button class="dialog-x" data-dismiss>×</button></div><p class="dialog-description">逐个选择 terminal 的处理方式。Detach 保留任务和布局；Close 结束 screen 并移除会话。关闭服务器也会暂停它的下载。</p><div id="server-session-choices"></div><div class="form-error" role="alert"></div><div class="dialog-actions"><button class="secondary-button" data-dismiss>取消</button><button class="primary-button" id="confirm-close-server">按以上选择关闭服务器</button></div></dialog>
   <dialog id="diagnostic-dialog" class="downloads-dialog"><div class="dialog-heading"><h2>终端诊断</h2><button class="dialog-x" data-dismiss>×</button></div><p class="dialog-description">只检查当前 screen，不遍历其他会话、不删除 socket、不终止任务。每条远程检查限时 6 秒。</p><pre id="diagnostic-output">正在检查…</pre></dialog>
   <dialog id="session-check-dialog" class="downloads-dialog"><div class="dialog-heading"><h2>核对本机会话记录</h2><button class="dialog-x" data-dismiss>×</button></div><p class="dialog-description">只检查当前服务器的已记录会话。确认远程已关闭的会话移出工作区；掉线或无法确认时保留。移除本机记录不会结束远程 screen。</p><div id="session-check-results"></div></dialog>
+  <dialog id="screen-scan-dialog" class="downloads-dialog"><div class="dialog-heading"><h2 id="screen-scan-title">扫描服务器 screen</h2><button class="dialog-x" data-dismiss>×</button></div><p class="dialog-description">列出这个 SSH 账号的 screen。添加只保存本机记录，稍后点“重新连接”才会连接；连接已附加的 screen 会分离另一台电脑的终端。忽略仅影响本机，可随时取消。</p><div class="screen-scan-tools"><label><input type="checkbox" id="show-ignored-screens">显示已忽略</label><button class="secondary-button" id="refresh-screen-scan">重新扫描</button></div><div id="screen-scan-summary" role="status"></div><div class="form-error" role="alert"></div><div id="screen-scan-results"></div></dialog>
   <div id="toast-container" role="status" aria-live="polite"></div>
 </body>
 </html>
