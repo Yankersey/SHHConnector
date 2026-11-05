@@ -44,6 +44,10 @@ def reveal_local(path):
     if sys.platform == "darwin":
         subprocess.Popen(["open", "-R", str(path)])
         return True
+    if os.name == "nt":
+        folder = path if path.is_dir() else path.parent
+        os.startfile(str(folder))
+        return True
     if shutil.which("xdg-open"):
         subprocess.Popen(["xdg-open", str(path if path.is_dir() else path.parent)])
         return True

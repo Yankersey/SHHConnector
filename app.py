@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ScreenDesk: loopback-only SSH / GNU screen workspace. Python 3.9+, POSIX."""
+"""ScreenDesk: loopback-only SSH / GNU screen workspace."""
 import argparse
 import base64
 import collections
@@ -10,23 +10,16 @@ import json
 import mimetypes
 import os
 import sys
-if os.name != "posix":
-    raise SystemExit("Windows 请运行 start-windows.cmd，或在 WSL / Ubuntu 中运行 sh start.sh。")
-import fcntl
 from pathlib import Path
-import pty
 import queue
 import re
 import secrets
-import select
 import shlex
 import shutil
-import signal
 import socket
 import struct
 import subprocess
 import tempfile
-import termios
 import threading
 import time
 import urllib.parse
@@ -34,9 +27,10 @@ import uuid
 from transfers import TransferManager, SFTPError
 from ssh_config import read_profiles
 from platform_support import open_workspace
+from local_runtime import WINDOWS, background_options, open_terminal, system_ssh, try_lock
 
 ROOT = Path(__file__).resolve().parent
-SSH = shutil.which("ssh") or "ssh"
+SSH = system_ssh()
 SAFE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 MAX_FRAME = 1024 * 1024
 
@@ -91,7 +85,7 @@ def clean_layout(data):
     return result
 
 
-def remote_script(record, creating, marker):
+def remote_script(record, creating, marker, printable=False):
     """All interpolated session identifiers are validated and shell-quoted."""
     ref = record.get("screen_ref") or record["remote_name"]
     if not SAFE_REF.fullmatch(ref):
@@ -118,6 +112,7 @@ while :; do
   n=$((n+1)); [ "$n" -lt 5 ] || exit "$rc"; sleep 0.2
 done
 """
+    ready_format = ("__SD_READY_%s:%%s__SD_END__" if printable else "\\036SD:%s:%%s\\037") % marker
     return remote_deadline_shell() + """command -v screen >/dev/null 2>&1 || {
   printf '\\n服务器未安装 GNU screen。请先安装 screen 后再连接。\\n' >&2; exit 127;
 }
@@ -133,7 +128,7 @@ if [ -z "$ref" ]; then
 fi
 sd_run screen -S "$ref" -X autodetach on || exit $?
 sd_run screen -S "$ref" -X defnonblock 1 || exit $?
-printf '\\036SD:%s:%%s\\037' "$ref"
+printf '%s' "$ref"
 stty -ixon -ixoff 2>/dev/null || :
 trap 'exit 129' HUP
 attempt=0
@@ -146,7 +141,7 @@ while :; do
   printf '\\nScreenDesk: socket 尚未完成分离，1 秒后重试附加（不会新建会话）…\\n' >&2
   sleep 1
 done
-""" % (target, setup, marker)
+""" % (target, setup, ready_format)
 
 
 def remote_deadline_shell():
@@ -172,8 +167,9 @@ def remote_deadline_shell():
 
 class ReadyFilter:
     """Remove an internal ready record, including across PTY read boundaries."""
-    def __init__(self, marker, callback):
-        self.prefix = ("\x1eSD:" + marker + ":").encode()
+    def __init__(self, marker, callback, printable=False):
+        self.prefix = (("__SD_READY_" if printable else "\x1eSD:") + marker + ":").encode()
+        self.end = b"__SD_END__" if printable else b"\x1f"
         self.pending = b""
         self.callback = callback
         self.done = False
@@ -186,14 +182,14 @@ class ReadyFilter:
         self.pending += chunk
         position = self.pending.find(self.prefix)
         if position >= 0:
-            end = self.pending.find(b"\x1f", position + len(self.prefix))
+            end = self.pending.find(self.end, position + len(self.prefix))
             if end >= 0:
                 raw = self.pending[position + len(self.prefix):end]
                 ref = raw.decode("ascii", "replace")
                 if not SAFE_REF.fullmatch(ref):
                     raise UserError("服务器返回了无效的 screen 标识")
-                result = self.pending[:position] + self.pending[end + 1:]
-                self.after_ready = bool(self.pending[end + 1:])
+                result = self.pending[:position] + self.pending[end + len(self.end):]
+                self.after_ready = bool(self.pending[end + len(self.end):])
                 self.pending = b""
                 self.done = True
                 self.callback(ref)
@@ -229,6 +225,11 @@ class Workspace:
         self.active_profile = None
         self.active_forwarding = None
         self.connections = {}
+        if WINDOWS:
+            from windows_tunnels import NativeTunnels
+            self.native_tunnels = NativeTunnels(self)
+        else:
+            self.native_tunnels = None
         self.ssh_config = Path(ssh_config).expanduser() if ssh_config else Path.home() / ".ssh" / "config"
         self.custom_ssh_config = bool(ssh_config)
         self.config_notes = []
@@ -328,6 +329,9 @@ class Workspace:
                 self.active_forwarding = None
             self.save()
         profile = connection["profile"]
+        if self.native_tunnels:
+            self.native_tunnels.close_profile(profile)
+            return self.snapshot()
         for policy in connection.get("policies", [connection["forwarding"]]):
             try:
                 subprocess.run(self.ssh_args(profile, True, policy)[:-1] + ["-O", "exit", profile["host"]],
@@ -369,9 +373,12 @@ class Workspace:
 
     def ssh_args(self, profile, control=False, forwarding=False):
         fingerprint = hashlib.sha256(json.dumps([profile, forwarding], sort_keys=True).encode()).hexdigest()[:20]
-        args = [SSH, "-o", "ControlPath=" + str(self.control_dir / fingerprint),
-                "-o", "ControlMaster=" + ("no" if control else "auto"),
-                "-o", "ControlPersist=600", "-o", "ServerAliveInterval=15",
+        if WINDOWS:
+            args = [SSH, "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"]
+        else:
+            args = [SSH, "-o", "ControlPath=" + str(self.control_dir / fingerprint),
+                    "-o", "ControlMaster=" + ("no" if control else "auto"), "-o", "ControlPersist=600"]
+        args += ["-o", "ServerAliveInterval=15",
                 "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=20",
                 "-o", "PermitLocalCommand=no", "-o", "RemoteCommand=none",
                 "-o", "ClearAllForwardings=" + ("no" if forwarding and not control else "yes"),
@@ -430,7 +437,7 @@ class Workspace:
         try:
             process = subprocess.run(self.ssh_args(record["profile"], True, record.get("forwarding", False)) + [command],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, timeout=25)
+                                     stderr=subprocess.STDOUT, timeout=25, **background_options())
         except subprocess.TimeoutExpired:
             raise UserError("远程操作超时，未确认 screen 状态。请重新连接后重试")
         if process.returncode:
@@ -458,7 +465,7 @@ case "$pid" in ''|*[!0-9]*) ;; *)
 """ % shlex.quote(ref)
         try:
             result = subprocess.run(self.ssh_args(record["profile"], True, record.get("forwarding", False)) + [command],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20, **background_options())
         except subprocess.TimeoutExpired:
             raise UserError("诊断 SSH 超时；未操作会话，也未删除 socket")
         return dict(output=result.stdout.decode("utf-8", "replace")[-12000:], exit_code=result.returncode)
@@ -474,7 +481,7 @@ case "$pid" in ''|*[!0-9]*) ;; *)
         command = remote_deadline_shell() + "LC_ALL=C sd_run screen -ls " + shlex.quote(ref)
         try:
             result = subprocess.run(self.ssh_args(record["profile"], True, record.get("forwarding", False)) + [command],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=12)
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=12, **background_options())
         except (subprocess.TimeoutExpired, OSError) as exc:
             return dict(id=identifier, status="unknown", message="暂时无法核对，记录已保留："+str(exc))
         output = result.stdout.decode("utf-8", "replace")
@@ -558,6 +565,10 @@ case "$pid" in ''|*[!0-9]*) ;; *)
         # The server deliberately never sends quit during application shutdown.
         for terminal in list(self.terminals.values()):
             terminal.stop()
+        if self.native_tunnels:
+            self.native_tunnels.close()
+            shutil.rmtree(str(self.control_dir), ignore_errors=True)
+            return
         # Keep the short-lived ControlPersist master alive for up to ten minutes.
         # Its private directory is removed at process exit after asking masters to exit.
         profiles = self.profiles + [r["profile"] for r in self.records]
@@ -579,7 +590,8 @@ class Terminal:
         self.closing = False
         self.stopped = False
         self.process = None
-        self.fd = None
+        self.transport = None
+        self.auth_transport = None
         self.cols, self.rows = cols, rows
         self.announced = False
         self.ready_at = None
@@ -596,32 +608,31 @@ class Terminal:
     def start(self):
         marker = secrets.token_hex(16)
         creating = not self.record.get("ever_ready")
-        command = remote_script(self.record, creating, marker)
-        self.filter = ReadyFilter(marker, self.ready)
-        master, slave = pty.openpty()
-        self.fd = master
-        self.resize(self.cols, self.rows)
-        os.set_blocking(master, False)
-        env = dict(os.environ, TERM="xterm-256color")
-        env.pop("SSH_ASKPASS", None)
-        env.pop("SSH_ASKPASS_REQUIRE", None)
-        try:
-            self.process = subprocess.Popen(
-                [sys.executable, str(ROOT / "pty_child.py")] +
-                self.workspace.ssh_args(self.record["profile"], forwarding=self.record.get("forwarding", False)) + [command],
-                stdin=slave, stdout=slave, stderr=slave, env=env,
-                start_new_session=True, close_fds=True)
-        except Exception:
-            os.close(master)
-            self.fd = None
-            raise
-        finally:
-            os.close(slave)
+        self.command = remote_script(self.record, creating, marker, printable=WINDOWS)
+        self.filter = ReadyFilter(marker, self.ready, printable=WINDOWS)
         with self.workspace.lock:
             self.record["state"] = "connecting"
             self.workspace.save()
         self.event(type="state", state="connecting")
         threading.Thread(target=self.read_loop, daemon=True).start()
+
+    def open_transport(self):
+        forwarding = self.record.get("forwarding", False)
+        if WINDOWS and forwarding:
+            self.workspace.native_tunnels.ensure(self.record["profile"], self)
+        if self.stopped:
+            return
+        env = dict(os.environ, TERM="xterm-256color")
+        env.pop("SSH_ASKPASS", None)
+        env.pop("SSH_ASKPASS_REQUIRE", None)
+        args = self.workspace.ssh_args(self.record["profile"], forwarding=forwarding and not WINDOWS)
+        transport = open_terminal(args + [self.command], self.cols, self.rows, env)
+        with self.lock:
+            if self.stopped:
+                transport.close()
+                return
+            self.transport = transport
+            self.process = transport.process
 
     def ready(self, ref):
         with self.workspace.lock:
@@ -645,25 +656,16 @@ class Terminal:
         self.cols = bounded_int(cols, 2, 1000, "列数")
         self.rows = bounded_int(rows, 1, 500, "行数")
         with self.lock:
-            if self.fd is not None:
-                fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", self.rows, self.cols, 0, 0))
+            transport = self.auth_transport or self.transport
+            if transport is not None:
+                transport.resize(self.cols, self.rows)
 
     def write(self, value):
-        raw = value.encode("utf-8")
         with self.lock:
-            if self.fd is None or self.stopped:
+            transport = self.auth_transport or self.transport
+            if transport is None or self.stopped:
                 return
-            # Large pastes must not block the HTTP/WebSocket reader indefinitely.
-            view = memoryview(raw)
-            while view:
-                _, writable, _ = select.select([], [self.fd], [], 2)
-                if not writable:
-                    raise UserError("终端输入暂时繁忙，请稍后重试")
-                try:
-                    written = os.write(self.fd, view[:4096])
-                except BlockingIOError:
-                    continue
-                view = view[written:]
+            transport.write(value)
 
     def ack(self, count):
         count = bounded_int(count, 1, 1024*1024, "输出确认大小")
@@ -680,7 +682,8 @@ class Terminal:
 
     def read_loop(self):
         try:
-            fd = self.fd
+            self.open_transport()
+            transport = self.transport
             while not self.stopped:
                 if self.ready_at and not self.announced and time.monotonic()-self.ready_at > 15:
                     raise UserError("screen 附加超过 15 秒没有输出；已断开本次连接并保留会话。可点“诊断”检查 socket 状态")
@@ -689,19 +692,10 @@ class Terminal:
                         raise UserError("浏览器超过 10 秒没有确认终端输出；已分离连接以保护远程任务")
                     time.sleep(.02)
                     continue
-                readable, _, _ = select.select([fd], [], [], 0.2)
-                if readable:
-                    try:
-                        with self.lock:
-                            if self.stopped or self.fd != fd:
-                                break
-                            chunk = os.read(fd, 32768)
-                    except BlockingIOError:
-                        continue
-                    except OSError:
-                        break
-                    if not chunk:
-                        break
+                chunk = transport.read()
+                if chunk == b"":
+                    break
+                if chunk is not None:
                     output = self.filter.feed(chunk)
                     if output:
                         self.output(output)
@@ -716,11 +710,11 @@ class Terminal:
             tail = self.filter.feed(b"", final=True)
             if tail:
                 self.output(tail)
-        except (OSError, ValueError, TypeError, UserError) as exc:
+        except (OSError, EOFError, RuntimeError, ValueError, TypeError, UserError) as exc:
             if not self.stopped:
                 self.event(type="error", message=str(exc))
         finally:
-            exit_code = self.process.poll()
+            exit_code = self.process.poll() if self.process else None
             with self.workspace.lock:
                 if (self.workspace.terminals.get(self.record["id"]) is self and
                         self.record["state"] not in ("detached", "ended")):
@@ -735,24 +729,13 @@ class Terminal:
             if self.stopped:
                 return
             self.stopped = True
-            if self.fd is not None:
-                os.close(self.fd)
-                self.fd = None
-            process = self.process
-            if process and process.poll() is None:
-                try:
-                    process.send_signal(signal.SIGHUP)
-                except OSError:
-                    pass
-        if process:
+            transport, self.transport = self.transport, None
+            self.auth_transport = None
+        if transport:
             try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                    process.wait(timeout=2)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                transport.close()
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
 
 class WebSocket:
@@ -1109,8 +1092,11 @@ def main():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument("--ssh-config", help="指定 SSH config 文件，默认 ~/.ssh/config")
     args = parser.parse_args()
-    if os.name != "posix":
-        parser.error("当前版本支持 macOS / Linux；Windows 请在 WSL 中运行")
+    if WINDOWS:
+        try:
+            import winpty
+        except ImportError:
+            parser.error("Windows 原生模式需要 pywinpty；请运行 python -m pip install -r requirements-windows.txt")
     if not shutil.which(SSH):
         parser.error("找不到系统 ssh 程序")
     workspace = None
@@ -1121,10 +1107,8 @@ def main():
     try:
         Path(args.data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
         lock_fd = os.open(str(Path(args.data_dir) / "running.lock"), os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            owns_lock = True
-        except BlockingIOError:
+        owns_lock = try_lock(lock_fd)
+        if not owns_lock:
             try:
                 existing_url = json.loads(runtime_file.read_text(encoding="utf-8"))["url"]
                 if not args.no_browser:
