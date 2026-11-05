@@ -70,10 +70,11 @@ class AuthOperation:
                 process.terminate()
 
     def check(self):
-        if self.stop and self.stop.is_set():
-            self.cancel("操作已暂停")
-        if self.cancelled.is_set():
-            raise AuthCancelled(self.reason)
+        with self.manager.lock:
+            if self.stop and self.stop.is_set():
+                self.cancel("操作已暂停")
+            if self.cancelled.is_set():
+                raise AuthCancelled(self.reason)
 
     def clock(self):
         self.check()
@@ -111,8 +112,9 @@ class AuthOperation:
                     prompt["event"].set()
 
     def close(self):
-        self.cancel("SSH 连接已结束")
         with self.manager.lock:
+            if not self.cancelled.is_set():
+                self.cancel("SSH 连接已结束")
             self.manager.operations.pop(self.token, None)
 
 

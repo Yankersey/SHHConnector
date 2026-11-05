@@ -112,7 +112,15 @@ class SFTP:
                 raise SFTPError("需要服务器支持 SFTP v3")
         except Exception as exc:
             prompted = bool(self.auth and self.auth.prompt_count)
+            cancelled = None
+            if self.auth:
+                try:
+                    self.auth.check()
+                except AuthError as auth_error:
+                    cancelled = auth_error
             self.close()
+            if cancelled:
+                raise cancelled from exc
             detail = b"".join(self.stderr).decode("utf-8", "replace")
             rejected = bool(re.search(r"Permission denied|Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED|Too many authentication failures", detail, re.I))
             if (prompted or rejected) and isinstance(exc, SFTPError):
