@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,7 +32,10 @@ class UpdateTests(unittest.TestCase):
         self.run_git(self.checkout,'config','user.email','test@example.invalid')
 
     def tearDown(self):
-        shutil.rmtree(self.temp)
+        def writable_remove(function, path, unused):
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            function(path)
+        shutil.rmtree(self.temp, onerror=writable_remove)
 
     def run_git(self,root,*args):
         result=subprocess.run(['git','-C',str(root)]+list(args),capture_output=True,text=True)

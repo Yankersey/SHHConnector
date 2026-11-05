@@ -1,0 +1,2 @@
+# ConPTY adapter, tested with Windows Python 3.9-3.13.
+pywinpty==2.0.15; sys_platform == "win32"

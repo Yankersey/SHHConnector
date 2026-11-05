@@ -32,7 +32,14 @@ def read_profiles(config_path):
             if key.lower() not in ("host", "include"):
                 continue
             try:
-                words = shlex.split(value, comments=True)
+                lexer = shlex.shlex(value, posix=True)
+                lexer.whitespace_split = True
+                lexer.commenters = "#"
+                # OpenSSH on Windows accepts C:\\... Include paths. POSIX
+                # shlex would silently remove their backslashes.
+                if os.name == "nt":
+                    lexer.escape = ""
+                words = list(lexer)
             except ValueError:
                 notes.append("无法解析 %s 中的一行 %s" % (path, key))
                 continue

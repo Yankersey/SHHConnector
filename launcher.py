@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from local_runtime import background_options, try_lock
 
 ROOT = Path(__file__).resolve().parent
 
@@ -19,7 +20,8 @@ def git(root, *args, check=True):
     environment = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_MERGE_AUTOEDIT="no")
     try:
         result = subprocess.run(["git", "-C", str(root)] + list(args), stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, timeout=35, env=environment)
+                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                timeout=35, env=environment, **background_options())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise UpdateError("Git 操作未完成：" + str(exc))
     if check and result.returncode:
@@ -75,14 +77,11 @@ def current_build(root=ROOT):
 
 
 def already_running(data_dir, no_browser=False):
-    import fcntl
     lock = Path(data_dir) / "running.lock"
     if not lock.exists():
         return False
-    with lock.open("r+") as stream:
-        try:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+    with lock.open("r+b") as stream:
+        if not try_lock(stream.fileno()):
             print("ScreenDesk 正在运行；先退出旧程序，再启动才能更新。", flush=True)
             if not no_browser:
                 try:
@@ -96,9 +95,6 @@ def already_running(data_dir, no_browser=False):
 
 
 def main(argv=None):
-    if os.name != "posix":
-        print("Windows 请运行 start-windows.cmd，或在 WSL / Ubuntu 中运行 sh start.sh。", file=sys.stderr)
-        return 1
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--update-only", action="store_true")

@@ -2,7 +2,7 @@
 
 代码仓库：[Yankersey/SHHConnector](https://github.com/Yankersey/SHHConnector)。[Windows / WSL 安装](WINDOWS.md) · [修改与双机同步](CONTRIBUTING.md)。
 
-本地 SSH / GNU screen 工作台，支持 macOS / Linux，Python 3.9+。无需 pip、npm 安装，终端资源已打包。
+本地 SSH / GNU screen 工作台，支持 macOS / Linux / 原生 Windows，Python 3.9+。macOS / Linux 无需 pip、npm 安装；Windows 仅需 pywinpty，终端网页资源均已打包。
 
 ## 启动
 
@@ -12,7 +12,7 @@ macOS 解压整个文件夹后，双击 **启动 ScreenDesk.command**。浏览�
 sh start.sh
 ```
 
-Linux 运行 `sh start.sh`。Windows 安装 WSL / Ubuntu 后运行同一命令，或双击 `start-windows.cmd`，详见 [Windows 使用说明](WINDOWS.md)。暂不支持原生 Windows Python。服务器需要 SSH、SFTP 和 GNU screen，不需要远程 Python。
+Linux 运行 `sh start.sh`。Windows 首次双击 **setup-windows.cmd**，以后双击 **start-windows.cmd**，直接使用 Windows Python、ConPTY 和系统 OpenSSH，无需 WSL / 虚拟机。详见 [Windows 使用说明](WINDOWS.md)；原有 WSL 方式保留为 [start-wsl.cmd](WINDOWS-WSL.md)。服务器需要 SSH、SFTP 和 GNU screen，不需要远程 Python。
 
 Git 克隆版本会在启动器启动前检查远程分支并执行快进更新；界面左下角显示提交号。离线 / 开发时显式使用 `sh start.sh --offline`。直接运行 `python3 app.py` 可以启动本地代码，但不会检查 Git 更新。ZIP 版本不包含 .git，因此没有自动更新功能。
 
@@ -68,6 +68,7 @@ Include 只静态读取 Host 别名，不执行 Match exec。放在复杂条件 
 - 下载掉线自动重试沿用批准的选择，不反复弹窗。
 - 不修改 SSH config。程序使用自己的 ControlMaster / ControlPath、禁用 LocalCommand、覆盖 RemoteCommand。不同服务器的连接相互独立。
 - 同一服务器的“启用”和“不启用”使用两个不同的 SSH 主连接。启用转发的多个窗口复用一个主连接，避免争抢相同监听端口；已建立的转发可能继续被同组窗口使用。关闭整个服务器时一并清理两组主连接。
+- 原生 Windows 使用一个独立的共享 SSH 转发连接承载该服务器已有配置中的转发，窗口关闭 / 分离后保留，关闭服务器或退出程序时释放。窗口的启用 / 不启用选择和 SSH config 均沿用原有设置，不重复占用端口。Windows OpenSSH 不支持 ControlMaster；文件下载、会话核对 / 结束 / 诊断使用独立连接，需要私钥或 ssh-agent 非交互认证，无法复用终端内输入的密码 / MFA。
 - 本程序关闭服务器不会操作其他软件已经建立的 SSH / 转发。
 
 ## 当前层文件与大目录

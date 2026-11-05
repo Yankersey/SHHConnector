@@ -1,20 +1,15 @@
 @echo off
 setlocal
-where wsl.exe >nul 2>nul
-if errorlevel 1 (
-  echo WSL is required. Open Administrator PowerShell and run: wsl --install
-  echo Then restart Windows and install Python 3 and OpenSSH in Ubuntu.
-  pause
-  exit /b 1
+cd /d "%~dp0"
+set PYTHONDONTWRITEBYTECODE=1
+if exist ".venv\Scripts\python.exe" (
+  ".venv\Scripts\python.exe" launcher.py %*
+) else (
+  python launcher.py %*
 )
-rem WSL inherits the Windows working directory; wslpath converts it safely.
-for /f "usebackq delims=" %%P in (`wsl.exe --exec wslpath -u "%~dp0."`) do set "SCREENDESK_WSL_PATH=%%P"
-if not defined SCREENDESK_WSL_PATH (
-  echo Cannot resolve the project path. Start Ubuntu and run: sh start.sh
-  pause
-  exit /b 1
-)
-wsl.exe --cd "%SCREENDESK_WSL_PATH%" --exec sh ./start.sh %*
 set "SCREENDESK_RESULT=%ERRORLEVEL%"
-if not "%SCREENDESK_RESULT%"=="0" pause
+if not "%SCREENDESK_RESULT%"=="0" (
+  echo Run setup-windows.cmd to prepare native Windows dependencies.
+  pause
+)
 exit /b %SCREENDESK_RESULT%

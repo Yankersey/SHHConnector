@@ -18,6 +18,8 @@ import threading
 import time
 import uuid
 from platform_support import reveal_local
+from local_runtime import WINDOWS, background_options
+from pipe_io import TimedPipes
 
 
 class SFTPError(Exception):
@@ -82,7 +84,8 @@ class SFTP:
         args = workspace.ssh_args(profile, True, forwarding)
         self.process = subprocess.Popen(args[:-1] + ["-s", args[-1], "sftp"],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, bufsize=0)
+                                        stderr=subprocess.PIPE, bufsize=0, **background_options())
+        self.pipes = TimedPipes(self.process) if WINDOWS else None
         self.next_id = 0
         self.closed = False
         self.stop = stop
@@ -108,6 +111,13 @@ class SFTP:
             pass
 
     def _read(self, size):
+        if self.pipes:
+            try:
+                return self.pipes.read(size, time.monotonic()+25, self.stop)
+            except (OSError, EOFError) as exc:
+                detail = b"".join(self.stderr).decode("utf-8", "replace").strip()[-1200:]
+                raise SFTPError(str(exc) + "\n" + detail +
+                                "\nWindows 文件操作需要 SSH 私钥或 ssh-agent 非交互认证；终端中的密码登录不会被复用。") from exc
         data = bytearray()
         deadline = time.monotonic() + 25
         while len(data) < size:
@@ -129,6 +139,12 @@ class SFTP:
     def send_packet(self, payload):
         if self.closed:
             raise SFTPError("连接已暂停")
+        if self.pipes:
+            try:
+                self.pipes.write(u32(len(payload)) + payload, time.monotonic()+25, self.stop)
+                return
+            except OSError as exc:
+                raise SFTPError(str(exc)) from exc
         data = memoryview(u32(len(payload)) + payload)
         deadline = time.monotonic() + 25
         while data:
@@ -253,6 +269,8 @@ class SFTP:
         if self.closed:
             return
         self.closed = True
+        if self.pipes:
+            self.pipes.close()
         try:
             self.process.terminate()
         except ProcessLookupError:
@@ -262,6 +280,8 @@ class SFTP:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=2)
+        if self.pipes:
+            self.pipes.join()
         for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
             try:
                 stream.close()
