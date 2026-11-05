@@ -17,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import socketserver
 import struct
 import subprocess
 import tempfile
@@ -925,6 +926,14 @@ class WebSocket:
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def server_bind(self):
+        # This service only accepts a literal loopback address. HTTPServer's
+        # reverse DNS lookup is unnecessary and can stall macOS startup when
+        # its resolver is unavailable or slow.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
 
     def __init__(self, port, workspace):
         super().__init__(("127.0.0.1", port), Handler)

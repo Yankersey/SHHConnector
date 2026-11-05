@@ -37,6 +37,15 @@ def wait_for(predicate, timeout=10):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_loopback_http_binding_does_not_depend_on_dns(self):
+        with mock.patch("socket.getfqdn", side_effect=AssertionError("Unexpected DNS lookup")):
+            server = app.Server(0, None)
+        try:
+            self.assertEqual(server.server_name, "127.0.0.1")
+            self.assertGreater(server.server_port, 0)
+        finally:
+            server.server_close()
+
     def test_process_lock_excludes_another_process_and_releases(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/"running.lock"
@@ -127,7 +136,14 @@ class RuntimeTests(unittest.TestCase):
                                        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             try:
                 runtime = data_dir/"running.json"
-                wait_for(runtime.exists)
+                try:
+                    wait_for(lambda: runtime.exists() or process.poll() is not None)
+                except AssertionError:
+                    process.terminate()
+                    output, unused = process.communicate(timeout=5)
+                    self.fail("App did not finish starting: " + output.decode("utf-8", "replace"))
+                if process.poll() is not None:
+                    self.fail("App exited before startup: " + process.stdout.read().decode("utf-8", "replace"))
                 info = json.loads(runtime.read_text(encoding="utf-8"))
                 match = re.fullmatch(r"(http://127\.0\.0\.1:(\d+))/#token=([a-f0-9]{64})", info["url"])
                 self.assertIsNotNone(match)
