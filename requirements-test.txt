@@ -1,0 +1,2 @@
+# Local SSH/SFTP fixtures only; not required by the application.
+paramiko>=3.5,<6

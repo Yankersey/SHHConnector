@@ -259,13 +259,13 @@ class AppTests(unittest.TestCase):
         record.update(ever_ready=True,state='detached',screen_ref='123.'+record['remote_name'])
         for code,output in [(255,b'Permission denied'),(124,b'timed out'),
                             (1,('There is a screen on:\n\t'+record['screen_ref']+'\t(Dead ???)\n').encode())]:
-            with mock.patch.object(app.subprocess,'run',return_value=subprocess.CompletedProcess([],code,output)):
+            with mock.patch.object(self.ws,'run_ssh',return_value=subprocess.CompletedProcess([],code,output)):
                 result=self.ws.check_session(record['id'])
             self.assertEqual(result['status'],'unknown');self.assertEqual(record['state'],'detached')
         found=('There is a screen on:\n\t'+record['screen_ref']+'\t(Detached)\n').encode()
-        with mock.patch.object(app.subprocess,'run',return_value=subprocess.CompletedProcess([],0,found)):
+        with mock.patch.object(self.ws,'run_ssh',return_value=subprocess.CompletedProcess([],0,found)):
             self.assertEqual(self.ws.check_session(record['id'])['status'],'exists')
-        with mock.patch.object(app.subprocess,'run',return_value=subprocess.CompletedProcess([],1,b'No Sockets found in /run/screen/S-test.\n')):
+        with mock.patch.object(self.ws,'run_ssh',return_value=subprocess.CompletedProcess([],1,b'No Sockets found in /run/screen/S-test.\n')):
             result=self.ws.check_session(record['id'])
         self.assertEqual(result['status'],'missing');self.assertEqual(record['state'],'ended')
         self.assertNotIn(record['id'],[r['id'] for r in self.ws.snapshot()['sessions']])

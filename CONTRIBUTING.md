@@ -43,6 +43,6 @@ SCREENDESK_TEST_SCREEN=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover 
 node tests/test_mouse.mjs
 ```
 
-测试使用本机临时目录 / socket，不登录用户的真实服务器。
+测试使用本机临时目录 / socket，不登录用户的真实服务器。安装 `python -m pip install -r requirements-test.txt` 可运行真实 OpenSSH 的密码 / MFA / SFTP 集成测试；测试用服务器的 Paramiko 不属于运行依赖。
 
 Windows 原生开发先运行 `python -m pip install -r requirements-windows.txt`，再运行 `python -m unittest discover -s tests -v`。Linux screen / 本机 SFTP server 测试在 Windows 上跳过，其余测试直接使用 Windows 原生进程。

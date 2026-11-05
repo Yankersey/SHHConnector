@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import posixpath
+import re
 import select
 import shutil
 import stat
@@ -20,6 +21,7 @@ import uuid
 from platform_support import reveal_local
 from local_runtime import WINDOWS, background_options
 from pipe_io import TimedPipes
+from ssh_auth import AuthError
 
 
 class SFTPError(Exception):
@@ -80,24 +82,49 @@ class Reader:
 
 
 class SFTP:
-    def __init__(self, workspace, profile, forwarding, stop=None):
+    def __init__(self, workspace, profile, forwarding, stop=None, purpose="文件操作"):
         args = workspace.ssh_args(profile, True, forwarding)
-        self.process = subprocess.Popen(args[:-1] + ["-s", args[-1], "sftp"],
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, bufsize=0, **background_options())
-        self.pipes = TimedPipes(self.process) if WINDOWS else None
+        self.auth = workspace.auth.begin(profile, purpose, stop) if getattr(workspace, "auth", None) else None
+        self.clock = self.auth.clock if self.auth else time.monotonic
+        try:
+            self.process = subprocess.Popen(args[:-1] + ["-s", args[-1], "sftp"],
+                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, bufsize=0,
+                                            **({"env": self.auth.env()} if self.auth else {}),
+                                            **background_options(), **({"start_new_session": True} if not WINDOWS else {}))
+            if self.auth:
+                self.auth.attach(self.process)
+        except Exception:
+            if self.auth:
+                self.auth.close()
+            raise
+        self.pipes = TimedPipes(self.process, clock=self.clock) if WINDOWS else None
         self.next_id = 0
         self.closed = False
         self.stop = stop
         self.stderr = collections.deque(maxlen=16)
-        threading.Thread(target=self._errors, daemon=True).start()
+        self.error_thread = threading.Thread(target=self._errors, daemon=True)
+        self.error_thread.start()
         try:
             self.send_packet(b"\x01" + u32(3))
             reply = self.packet()
             if len(reply) < 5 or reply[0] != 2 or struct.unpack("!I", reply[1:5])[0] != 3:
                 raise SFTPError("需要服务器支持 SFTP v3")
-        except Exception:
+        except Exception as exc:
+            prompted = bool(self.auth and self.auth.prompt_count)
+            cancelled = None
+            if self.auth:
+                try:
+                    self.auth.check()
+                except AuthError as auth_error:
+                    cancelled = auth_error
             self.close()
+            if cancelled:
+                raise cancelled from exc
+            detail = b"".join(self.stderr).decode("utf-8", "replace")
+            rejected = bool(re.search(r"Permission denied|Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED|Too many authentication failures", detail, re.I))
+            if (prompted or rejected) and isinstance(exc, SFTPError):
+                raise AuthError("SSH 登录未完成，请检查密码、验证码或服务器状态后重试") from exc
             raise
 
     def _errors(self):
@@ -107,23 +134,24 @@ class SFTP:
                 if not chunk:
                     break
                 self.stderr.append(chunk)
+                if self.auth:
+                    self.auth.note(chunk)
         except (ValueError, OSError):
             pass
 
     def _read(self, size):
         if self.pipes:
             try:
-                return self.pipes.read(size, time.monotonic()+25, self.stop)
+                return self.pipes.read(size, self.clock()+25, self.stop)
             except (OSError, EOFError) as exc:
                 detail = b"".join(self.stderr).decode("utf-8", "replace").strip()[-1200:]
-                raise SFTPError(str(exc) + "\n" + detail +
-                                "\nWindows 文件操作需要 SSH 私钥或 ssh-agent 非交互认证；终端中的密码登录不会被复用。") from exc
+                raise SFTPError(str(exc) + "\n" + detail) from exc
         data = bytearray()
-        deadline = time.monotonic() + 25
+        deadline = self.clock() + 25
         while len(data) < size:
             if self.closed or (self.stop and self.stop.is_set()):
                 raise SFTPError("连接已暂停")
-            wait = deadline - time.monotonic()
+            wait = deadline - self.clock()
             if wait <= 0:
                 raise SFTPError("SFTP 读取超时，将从已保存位置重试")
             available, _, _ = select.select([self.process.stdout], [], [], min(wait, 0.5))
@@ -132,7 +160,7 @@ class SFTP:
             chunk = os.read(self.process.stdout.fileno(), size - len(data))
             if not chunk:
                 detail = b"".join(self.stderr).decode("utf-8", "replace").strip()[-1200:]
-                raise SFTPError("SFTP 连接已中断。首次使用请先打开终端完成 SSH 登录。\n" + detail)
+                raise SFTPError("SFTP 连接已中断，请检查 SSH 登录与服务器状态。\n" + detail)
             data.extend(chunk)
         return bytes(data)
 
@@ -141,16 +169,16 @@ class SFTP:
             raise SFTPError("连接已暂停")
         if self.pipes:
             try:
-                self.pipes.write(u32(len(payload)) + payload, time.monotonic()+25, self.stop)
+                self.pipes.write(u32(len(payload)) + payload, self.clock()+25, self.stop)
                 return
             except OSError as exc:
                 raise SFTPError(str(exc)) from exc
         data = memoryview(u32(len(payload)) + payload)
-        deadline = time.monotonic() + 25
+        deadline = self.clock() + 25
         while data:
             if self.closed or (self.stop and self.stop.is_set()):
                 raise SFTPError("连接已暂停")
-            if time.monotonic() > deadline:
+            if self.clock() > deadline:
                 raise SFTPError("SFTP 发送超时")
             _, writable, _ = select.select([], [self.process.stdin], [], 0.5)
             if writable:
@@ -269,6 +297,8 @@ class SFTP:
         if self.closed:
             return
         self.closed = True
+        if self.auth:
+            self.auth.close()
         if self.pipes:
             self.pipes.close()
         try:
@@ -282,6 +312,7 @@ class SFTP:
             self.process.wait(timeout=2)
         if self.pipes:
             self.pipes.join()
+        self.error_thread.join(timeout=1)
         for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
             try:
                 stream.close()
@@ -389,7 +420,7 @@ class TransferManager:
             old.close()
         if not cursor_id:
             # Network I/O never holds the transfer manager's global state lock.
-            client = SFTP(self.workspace, profile, forwarding)
+            client = SFTP(self.workspace, profile, forwarding, purpose="读取文件列表")
             try:
                 cursor = DirectoryPage(client, path)
             except Exception:
@@ -523,7 +554,7 @@ class TransferManager:
         return committed
 
     def _attempt(self, job, stop):
-        client = SFTP(self.workspace, job["profile"], job["forwarding"], stop=stop)
+        client = SFTP(self.workspace, job["profile"], job["forwarding"], stop=stop, purpose="下载文件")
         with self.lock:
             self.clients[job["id"]] = client
         try:
@@ -605,6 +636,13 @@ class TransferManager:
                         job.update(state="changed", message=str(exc))
                         self._save()
                     break
+                except AuthError as exc:
+                    if stop.is_set() or self.closing:
+                        break
+                    with self.lock:
+                        job.update(state="paused", message=str(exc) + "；点击继续可重新认证")
+                        self._save()
+                    break
                 except (SFTPError, OSError, ValueError) as exc:
                     if stop.is_set() or self.closing:
                         break
@@ -617,7 +655,7 @@ class TransferManager:
                         break
         finally:
             with self.lock:
-                if job["state"] not in ("completed", "changed", "cancelled"):
+                if job["state"] not in ("completed", "changed", "cancelled", "paused"):
                     job.update(state="paused", message="已暂停，部分文件和断点已保存")
                 self._offset(job)
                 self._save()

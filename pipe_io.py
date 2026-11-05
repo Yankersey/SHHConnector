@@ -6,8 +6,9 @@ import time
 
 
 class TimedPipes:
-    def __init__(self, process):
+    def __init__(self, process, clock=time.monotonic):
         self.process = process
+        self.clock = clock
         self.closed = threading.Event()
         self.outgoing = queue.Queue(maxsize=1)
         self.pending = bytearray()
@@ -61,7 +62,7 @@ class TimedPipes:
     def _check(self, deadline, stop):
         if self.closed.is_set() or (stop and stop.is_set()):
             raise OSError("连接已暂停")
-        if time.monotonic() >= deadline:
+        if self.clock() >= deadline:
             raise TimeoutError("SFTP 通信超时，将从已保存位置重试")
 
     def read(self, size, deadline, stop=None):
@@ -79,7 +80,7 @@ class TimedPipes:
                 elif self.eof:
                     raise EOFError("SSH pipe closed")
                 else:
-                    self.condition.wait(min(.1, max(.001, deadline-time.monotonic())))
+                    self.condition.wait(min(.1, max(.001, deadline-self.clock())))
         return bytes(result)
 
     def write(self, data, deadline, stop=None):
