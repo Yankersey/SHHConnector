@@ -25,7 +25,7 @@ jobs:
       - name: JavaScript mouse protocol tests
         run: node tests/test_mouse.mjs
   macos:
-    runs-on: macos-latest
+    runs-on: macos-26-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
