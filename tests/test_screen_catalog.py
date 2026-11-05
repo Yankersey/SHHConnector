@@ -81,11 +81,11 @@ class WorkspaceDiscoveryTests(unittest.TestCase):
         self.folder.cleanup()
 
     def scan(self):
-        def response(args, **kwargs):
-            marker = re.search(r"__SD_LIST_([0-9a-f]{32})_BEGIN__", args[-1])[1]
+        def response(profile, command, *args, **kwargs):
+            marker = re.search(r"__SD_LIST_([0-9a-f]{32})_BEGIN__", command)[1]
             output = "__SD_LIST_%s_BEGIN__\nThere are screens on:\n\t%s\t(Attached)\n\t456.manual\t(Detached)\n\t789.broken\t(Dead ???)\n__SD_LIST_%s_END__\n" % (marker, self.remote, marker)
             return subprocess.CompletedProcess(args, 0, output.encode("utf-8"))
-        with mock.patch.object(app.subprocess, "run", side_effect=response):
+        with mock.patch.object(self.ws, "run_ssh", side_effect=response):
             return self.ws.scan_screens(self.profile["id"], False)
 
     def data(self, scan, ref=None):
@@ -135,7 +135,7 @@ class WorkspaceDiscoveryTests(unittest.TestCase):
         scan = self.scan()
         self.ws.add_discovered_screen(self.data(scan))
         before = self.ws.snapshot()
-        with mock.patch.object(app.subprocess, "run", return_value=subprocess.CompletedProcess([], 255, b"Permission denied")):
+        with mock.patch.object(self.ws, "run_ssh", return_value=subprocess.CompletedProcess([], 255, b"Permission denied")):
             with self.assertRaises(app.UserError):
                 self.ws.scan_screens(self.profile["id"], False)
         self.assertEqual(before, self.ws.snapshot())

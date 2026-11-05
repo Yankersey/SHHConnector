@@ -30,6 +30,7 @@ from ssh_config import read_profiles
 from platform_support import open_workspace
 from local_runtime import WINDOWS, background_options, open_terminal, system_ssh, try_lock
 from screen_catalog import SAFE_REF, matches_ref, parse_scan, scan_script, session_name, valid_name
+from ssh_auth import AuthError, AuthManager
 
 ROOT = Path(__file__).resolve().parent
 SSH = system_ssh()
@@ -239,6 +240,7 @@ class Workspace:
         self.build = os.environ.get("SCREENDESK_BUILD", (ROOT/"VERSION").read_text(encoding="utf-8").strip() if (ROOT/"VERSION").exists() else "development")
         # Short private path: OpenSSH Unix sockets have a ~104 byte path limit on macOS.
         self.control_dir = Path(tempfile.mkdtemp(prefix="sd-"))
+        self.auth = AuthManager(self.control_dir)
         if self.state_file.exists():
             try:
                 saved = json.loads(self.state_file.read_text(encoding="utf-8"))
@@ -320,6 +322,7 @@ class Workspace:
         return connection["profile"]
 
     def disconnect(self, identifier):
+        self.auth.cancel_profile(identifier)
         with self.lock:
             connection = self.connections.get(identifier)
             if not connection:
@@ -394,7 +397,7 @@ class Workspace:
                 "-o", "ClearAllForwardings=" + ("no" if forwarding and not control else "yes"),
                 "-o", "ExitOnForwardFailure=yes", "-o", "EscapeChar=none"]
         if control:
-            args += ["-T", "-o", "BatchMode=yes"]
+            args += ["-T", "-o", "BatchMode=no"]
         else:
             args += ["-tt"]
         if self.custom_ssh_config:
@@ -407,6 +410,9 @@ class Workspace:
             args += ["-i", os.path.expanduser(profile["identity"])]
         args += [profile["host"]]
         return args
+
+    def run_ssh(self, profile, command, forwarding, purpose, timeout):
+        return self.auth.run(self.ssh_args(profile, True, forwarding) + [command], profile, purpose, timeout)
 
     def new_session(self, data):
         with self.lock:
@@ -449,9 +455,7 @@ class Workspace:
         marker = secrets.token_hex(16)
         command = remote_deadline_shell() + scan_script(marker)
         try:
-            result = subprocess.run(self.ssh_args(profile, True, forwarding) + [command],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    timeout=15, **background_options())
+            result = self.run_ssh(profile, command, forwarding, "扫描服务器 screen", 15)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise UserError("扫描未完成，本机会话记录保持不变：" + str(exc)) from exc
         output = result.stdout.decode("utf-8", "replace")
@@ -516,9 +520,8 @@ class Workspace:
             raise UserError("无效的 screen 标识")
         command = remote_deadline_shell() + "sd_run screen -S %s -X %s" % (shlex.quote(ref), "quit" if action == "terminate" else "detach")
         try:
-            process = subprocess.run(self.ssh_args(record["profile"], True, record.get("forwarding", False)) + [command],
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, timeout=25, **background_options())
+            process = self.run_ssh(record["profile"], command, record.get("forwarding", False),
+                                   "结束 screen" if action == "terminate" else "分离 screen", 25)
         except subprocess.TimeoutExpired:
             raise UserError("远程操作超时，未确认 screen 状态。请重新连接后重试")
         if process.returncode:
@@ -545,8 +548,7 @@ case "$pid" in ''|*[!0-9]*) ;; *)
 ;; esac
 """ % shlex.quote(ref)
         try:
-            result = subprocess.run(self.ssh_args(record["profile"], True, record.get("forwarding", False)) + [command],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20, **background_options())
+            result = self.run_ssh(record["profile"], command, record.get("forwarding", False), "诊断 screen", 20)
         except subprocess.TimeoutExpired:
             raise UserError("诊断 SSH 超时；未操作会话，也未删除 socket")
         return dict(output=result.stdout.decode("utf-8", "replace")[-12000:], exit_code=result.returncode)
@@ -561,8 +563,7 @@ case "$pid" in ''|*[!0-9]*) ;; *)
             raise UserError("无效的 screen 标识")
         command = remote_deadline_shell() + "LC_ALL=C sd_run screen -ls " + shlex.quote(ref)
         try:
-            result = subprocess.run(self.ssh_args(record["profile"], True, record.get("forwarding", False)) + [command],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=12, **background_options())
+            result = self.run_ssh(record["profile"], command, record.get("forwarding", False), "核对 screen", 12)
         except (subprocess.TimeoutExpired, OSError) as exc:
             return dict(id=identifier, status="unknown", message="暂时无法核对，记录已保留："+str(exc))
         output = result.stdout.decode("utf-8", "replace")
@@ -646,6 +647,7 @@ case "$pid" in ''|*[!0-9]*) ;; *)
             raise
 
     def shutdown(self):
+        self.auth.close()
         self.transfers.shutdown()
         # The server deliberately never sends quit during application shutdown.
         for terminal in list(self.terminals.values()):
@@ -986,6 +988,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authorized():
                 return self.response(403, dict(error="请从启动器打开工作台"))
             return self.response(200, self.server.workspace.snapshot())
+        if path == "/api/auth/prompts":
+            if not self.authorized():
+                return self.response(403, dict(error="请求未获授权"))
+            return self.response(200, dict(prompts=self.server.workspace.auth.snapshot()))
         if path == "/api/downloads":
             if not self.authorized():
                 return self.response(403, dict(error="请求未获授权"))
@@ -1017,6 +1023,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             data = self.read_json()
             path = urllib.parse.urlsplit(self.path).path
+            auth_match = re.fullmatch(r"/api/auth/([0-9a-f]{32})/answer", path)
+            if auth_match:
+                cancel = data.get("cancel", False)
+                if not isinstance(cancel, bool):
+                    raise UserError("无效的认证操作")
+                workspace.auth.answer(auth_match[1], data.get("answer"), cancel=cancel)
+                return self.response(200, dict(ok=True))
             if path == "/api/connect":
                 return self.response(200, workspace.activate(data.get("profile_id"), data.get("forwarding")))
             if path == "/api/profiles/reload":
@@ -1101,7 +1114,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
                 return
             return self.response(404, dict(error="Not found"))
-        except (UserError, SFTPError) as exc:
+        except (UserError, SFTPError, AuthError) as exc:
             self.response(400, dict(error=str(exc)))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.response(500, dict(error="操作失败：" + str(exc)))

@@ -25,7 +25,9 @@ python -m venv .venv
 
 窗口里仍按原来的方式选择“启用 / 不启用端口转发”。启用时，一个独立的 Windows SSH 连接承载该服务器配置中的转发；多个启用窗口共享它，不反复绑定相同端口。分离 / 关闭一个窗口不会释放其他窗口使用的转发；关闭整个服务器或退出程序才会释放。转发登录提示会显示在首次启用它的终端中，之后该终端继续连接 screen；使用密码时这两个连接可能分别要求登录。
 
-Windows OpenSSH 不支持 ControlMaster，因此普通终端各自建立 SSH 连接。文件列表、下载、核对会话、诊断和显式结束 screen 使用独立的非交互连接，**需要可用的 SSH 私钥或 ssh-agent 认证**。在一个终端中输入过密码 / MFA，不会让其他连接自动获得认证；失败时保留会话与下载断点，不自动结束远程 screen。仅使用密码 / MFA 的服务器，可继续使用 WSL 方式获得原来的连接复用能力。
+Windows OpenSSH 不支持 ControlMaster，因此普通终端各自建立 SSH 连接。扫描 screen、文件列表、下载、核对会话、诊断和显式结束 screen 使用独立连接，**没有公钥也可以使用**：需要时界面会弹出“SSH 身份认证”，输入该服务器的密码、私钥口令或验证码，完成后原操作继续。不需要先打开终端登录，也不需要 WSL。
+
+密码不写入磁盘、参数或日志，不缓存；每个独立连接可能需要重新认证。首次主机指纹需在对话框中明确确认，变更的主机密钥仍会被拒绝。取消或认证失败会暂停下载并保留断点，稍后点击“继续”重试，不无限弹窗。认证助手使用本项目 Python 环境中 pip 自带的标准 Windows 启动器，在私有临时目录生成；正常使用 `setup-windows.cmd` 创建的环境即可，无需管理员权限或新增全局程序。
 
 SSH 是否经过代理由现有 SSH 配置和网络路由决定。Windows 的 HTTP/HTTPS 系统代理不会自动代理 SSH TCP 流量；已有的反代地址、ProxyCommand 或 TUN 路由继续按系统 SSH 的行为工作。程序不更改任何代理设置。可先在 Windows PowerShell 用 `ssh 你的Host别名` 验证原来的连接。
 
@@ -37,6 +39,6 @@ Windows 的布局与断点保存在项目的 `data/`，文件下载到 `download
 
 ## 验证范围
 
-Windows 自动测试覆盖 ConPTY 中文输入输出与大小调整、原生 HTTP 启动、令牌检查、单实例锁、下载管道超时 / 暂停、共享转发连接的生命周期、SSH Include 路径和 Git 更新保护。Ubuntu 测试继续覆盖实际 GNU screen 和本机 SFTP 集成，不访问用户真实服务器。
+Windows 自动测试覆盖 ConPTY 中文输入输出与大小调整、原生 HTTP 启动、令牌检查、单实例锁、下载管道超时 / 暂停、共享转发连接、SSH Include 路径和 Git 更新保护。Windows、macOS、Ubuntu 均使用真实系统 OpenSSH 验证密码 / MFA 和 SFTP；额外检查取消、错误密码、认证超时、来源鉴权和主机密钥变更拒绝，不访问用户真实服务器。
 
 参考：[Windows OpenSSH 功能范围](https://github.com/PowerShell/Win32-OpenSSH/wiki/Project-Scope)、[pywinpty](https://github.com/andfoy/pywinpty)。

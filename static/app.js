@@ -10,6 +10,7 @@ let profiles = [], sessions = [], selectedProfile = null, zIndex = 10, selectedW
 let pendingNew = false, closeTarget = null, shuttingDown = false, activeForwarding = null;
 let filePage = null, fileProfile = null, fileForwarding = false, fileBusy = false;
 let downloadsTimer = null;
+let authTimer=null,authPolling=false,authAnswerBusy=false,activeAuth=null;
 let screenScan = null, scanBusy = false, scanSerial = 0;
 const profilePolicies = new Map();
 const connections = new Map();
@@ -71,6 +72,41 @@ function chooseForwarding(profile) {
 }
 $('#forwarding-no').onclick = () => activeForwarding?.(false);
 $('#forwarding-yes').onclick = () => activeForwarding?.(true);
+
+async function pollSSHAuth(){
+  if(shuttingDown||authPolling||authAnswerBusy)return;authPolling=true;
+  try{
+    const data=await api('/api/auth/prompts');if(authAnswerBusy)return;
+    const request=data.prompts[0],dialog=$('#ssh-auth-dialog'),input=$('#ssh-auth-secret');
+    if(!request){activeAuth=null;input.value='';if(dialog.open)dialog.close();return;}
+    const changed=activeAuth?.id!==request.id;activeAuth=request;
+    if(changed){input.value='';clearError(dialog);}
+    const confirm=request.kind==='confirm';
+    $('#ssh-auth-title').textContent=confirm?'确认 SSH 连接':'SSH 身份认证';
+    $('#ssh-auth-context').textContent=request.server+' · '+request.host+' · '+request.purpose;
+    $('#ssh-auth-prompt').textContent=request.prompt;
+    $('#ssh-auth-details').textContent=request.details||'SSH 尚未返回其他连接信息。';
+    if(changed)$('#ssh-auth-details-box').open=confirm;
+    $('#ssh-auth-secret-label').hidden=confirm;
+    $('#ssh-auth-submit').textContent=confirm?'确认并继续':'提交认证';
+    $('#ssh-auth-queue').textContent=data.prompts.length>1?'还有 '+(data.prompts.length-1)+' 个认证请求等待处理':'';
+    if(!dialog.open){showDialog(dialog);(confirm?$('#ssh-auth-submit'):input).focus();}
+    else if(changed)(confirm?$('#ssh-auth-submit'):input).focus();
+  }catch(_){/* Existing app status handles service disconnection; no credentials are logged. */}
+  finally{authPolling=false;}
+}
+async function answerSSHAuth(cancel=false){
+  if(!activeAuth||authAnswerBusy)return;
+  const request=activeAuth,dialog=$('#ssh-auth-dialog'),input=$('#ssh-auth-secret');
+  const answer=request.kind==='confirm'?'yes':input.value;input.value='';authAnswerBusy=true;
+  $('#ssh-auth-submit').disabled=true;
+  try{await api('/api/auth/'+request.id+'/answer',cancel?{cancel:true}:{answer});if(activeAuth?.id===request.id){activeAuth=null;dialog.close();}}
+  catch(error){errorIn(dialog,error);}
+  finally{authAnswerBusy=false;$('#ssh-auth-submit').disabled=false;pollSSHAuth();}
+}
+$('#ssh-auth-form').onsubmit=event=>{event.preventDefault();answerSSHAuth(false);};
+$$('[data-auth-cancel]').forEach(button=>button.onclick=()=>answerSSHAuth(true));
+$('#ssh-auth-dialog').addEventListener('cancel',event=>{event.preventDefault();answerSSHAuth(true);});
 
 function renderSidebar() {
   const servers = $('#server-list'); servers.replaceChildren();
@@ -385,7 +421,7 @@ $('#workspace-nav').onclick=()=>$('#viewport').scrollTo(0,0);$('.brand').onclick
 $('#help-button').onclick=()=>showDialog($('#help-dialog'));
 $('#exit-app').onclick=()=>showDialog($('#quit-dialog'));
 $('#confirm-quit').onclick=async()=>{
-  try{shuttingDown=true;clearInterval(downloadsTimer);await api('/api/shutdown',{});$('#quit-dialog').close();const message=el('div','shutdown-message');message.append(el('h1','','ScreenDesk 已退出'),el('p','','远程 screen 与任务继续运行。\n下次双击启动器即可恢复工作区。'));document.body.append(message);}catch(error){shuttingDown=false;errorIn($('#quit-dialog'),error);}
+  try{shuttingDown=true;clearInterval(downloadsTimer);clearInterval(authTimer);$('#ssh-auth-secret').value='';await api('/api/shutdown',{});$('#quit-dialog').close();const message=el('div','shutdown-message');message.append(el('h1','','ScreenDesk 已退出'),el('p','','远程 screen 与任务继续运行。\n下次双击启动器即可恢复工作区。'));document.body.append(message);}catch(error){shuttingDown=false;errorIn($('#quit-dialog'),error);authTimer=setInterval(pollSSHAuth,500);}
 };
 
 function humanSize(size){if(size==null)return '未知大小';if(size<1024)return size+' B';const power=Math.min(4,Math.floor(Math.log(size)/Math.log(1024)));return (size/1024**power).toFixed(1)+' '+['B','KB','MB','GB','TB'][power];}
@@ -458,7 +494,7 @@ async function boot(){
   try{if(!token)throw new Error('请双击启动器打开 ScreenDesk。');const data=await api('/api/workspace');$('#build-version').textContent=data.build?' · '+data.build:'';absorb(data);selectedProfile=profiles.find(p=>p.id===sessionStorage.getItem('sd-profile'))?.id||data.active_profile?.id||profiles[0]?.id||null;
     // Restore layout without making a connection before the forwarding question.
     for(const record of currentSessions())if(record.layout?.visible)await openSession(record,false);
-    setFilesOpen(localStorage.getItem('sd-files-open')==='1');renderSidebar();refreshDownloads();downloadsTimer=setInterval(refreshDownloads,1800);
+    setFilesOpen(localStorage.getItem('sd-files-open')==='1');renderSidebar();refreshDownloads();downloadsTimer=setInterval(refreshDownloads,1800);pollSSHAuth();authTimer=setInterval(pollSSHAuth,500);
   }catch(error){$('#app-status').textContent=error.message;$('#app-status').classList.add('fatal');toast(error.message,true);}
 }
 boot();
