@@ -6,8 +6,10 @@ permissions:
   contents: read
 jobs:
   python:
-    runs-on: ubuntu-latest
+    # Python 3.9 has no actions/python-versions build for Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         python-version: ['3.9', '3.12']
     steps:
