@@ -50,3 +50,6 @@
 :root[data-theme="dark"] .danger-choice{background:#302326;border-color:#654c4c}
 :root[data-theme="dark"] .danger-choice strong{color:#e5b8b0}
 :root[data-theme="dark"] .download-item,:root[data-theme="dark"] .session-check-row,:root[data-theme="dark"] .server-close-row{border-color:#344958}
+/* FitAddon subtracts terminal padding, so keep insets on xterm itself. */
+.terminal-content{padding:0}
+.terminal-content .xterm{padding:8px 4px 3px 9px}
