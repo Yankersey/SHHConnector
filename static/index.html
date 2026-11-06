@@ -10,6 +10,7 @@
   <script defer src="/vendor/xterm.js"></script>
   <script defer src="/vendor/addon-fit.js"></script>
   <script defer src="/mouse-filter.js"></script>
+  <script defer src="/terminal-view.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body>
@@ -29,7 +30,7 @@
   <main>
     <header class="topbar">
       <div class="breadcrumb"><strong id="connection-label">终端工作台</strong><span id="connection-state"></span></div>
-      <div class="topbar-actions"><span class="private-label"><i></i> 仅本机访问</span><button class="text-button" id="exit-app">退出程序</button></div>
+      <div class="topbar-actions"><select id="theme-mode" aria-label="界面主题" title="日间白底 / 夜间黑底"><option value="auto">跟随系统</option><option value="light">日间模式</option><option value="dark">夜间模式</option></select><span class="private-label"><i></i> 仅本机访问</span><button class="text-button" id="exit-app">退出程序</button></div>
     </header>
     <div class="workspace-toolbar"><div class="view-label"><span>▦</span><span id="workspace-summary">尚未打开窗口</span></div><div class="workspace-controls"><button class="text-button" id="scan-screens">扫描服务器 screen</button><button class="text-button" id="verify-sessions">核对会话</button><button class="text-button" id="tile-windows">平铺</button><button class="text-button" id="cascade-windows">层叠</button><button class="text-button danger-text" id="close-server">关闭服务器</button><button class="primary-button" id="new-window">＋ 新建窗口</button></div></div>
     <section id="viewport" class="viewport" aria-label="可自由布局的终端窗口">

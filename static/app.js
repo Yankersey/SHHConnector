@@ -5,6 +5,19 @@ const token = new URLSearchParams(location.hash.slice(1)).get('token') || sessio
 if (token) sessionStorage.setItem('sd-token', token);
 history.replaceState(null, '', location.pathname);
 const windows = new Map();
+const systemTheme=window.matchMedia('(prefers-color-scheme: dark)');
+let themePreference=localStorage.getItem('sd-theme')||'auto';
+if(!['auto','light','dark'].includes(themePreference))themePreference='auto';
+function currentTheme(){return TerminalView.resolveTheme(themePreference,systemTheme.matches);}
+function applyTheme(){
+  const theme=currentTheme();document.documentElement.dataset.theme=theme;
+  $('#theme-mode').value=themePreference;
+  for(const win of windows.values()){win.term.options.theme=TerminalView.palette(theme);if(!win.element.hidden)win.term.refresh(0,win.term.rows-1);}
+}
+$('#theme-mode').onchange=event=>{themePreference=event.target.value;localStorage.setItem('sd-theme',themePreference);applyTheme();};
+if(systemTheme.addEventListener)systemTheme.addEventListener('change',()=>{if(themePreference==='auto')applyTheme();});
+else systemTheme.addListener(()=>{if(themePreference==='auto')applyTheme();});
+applyTheme();
 const stateNames = {new:'等待连接', connecting:'正在登录', connected:'已连接', detached:'已分离', disconnected:'连接已断开', ended:'已结束'};
 let profiles = [], sessions = [], selectedProfile = null, zIndex = 10, selectedWindow = null;
 let pendingNew = false, closeTarget = null, shuttingDown = false, activeForwarding = null;
@@ -237,11 +250,19 @@ async function openSession(record, shouldConnect) {
     actions.append(forwarding,mouse,diagnose,fontMinus,fontPlus,maximize,close);header.append(actions);
     const content=el('div','terminal-content'),footer=el('div','window-footer');
     const dot=el('i','state-dot'),stateLabel=el('span'),reconnect=el('button','window-reconnect','重新连接'),refLabel=el('span','remote-ref');
-    footer.append(dot,stateLabel,reconnect,refLabel);element.append(header,content,footer);$('#canvas').append(element);
-    const term=new Terminal({fontFamily:'Menlo, Monaco, "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:record.layout?.fontSize || 13,lineHeight:1.18,cursorBlink:true,scrollback:5000,convertEol:false,theme:{background:'#101820',foreground:'#d5e1e8',cursor:'#9edbbf',selectionBackground:'#31665b',black:'#172a34',red:'#e58a85',green:'#9dcba6',yellow:'#dfc58b',blue:'#8badcf',magenta:'#b9a0cd',cyan:'#8ac6c4',white:'#dde5e9'}});
+    const review=el('button','window-review','回看'),live=el('button','window-live','回到底部');review.title='滚轮 / Shift+PageUp 回看；全屏缓冲区读取 screen 历史';live.hidden=true;
+    footer.append(dot,stateLabel,reconnect,review,live,refLabel);element.append(header,content,footer);$('#canvas').append(element);
+    const term=new Terminal({fontFamily:'Menlo, Monaco, "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:record.layout?.fontSize || 13,lineHeight:1.18,cursorBlink:true,scrollback:20000,convertEol:false,minimumContrastRatio:4.5,theme:TerminalView.palette(currentTheme())});
     const addon=new FitAddon.FitAddon();term.loadAddon(addon);term.open(content);
     const remoteMouse=localStorage.getItem('sd-remote-mouse:'+record.id)==='1';
-    win={record,element,term,fit:addon,dot,stateLabel,reconnect,refLabel,ws:null,geometry:{},maximized:false,forwarding,mouse,remoteMouse,mouseFilter:new TerminalMouseFilter(remoteMouse),decoder:new TextDecoder()};windows.set(record.id,win);
+    const historyView=el('div','terminal-history');historyView.hidden=true;historyView.tabIndex=0;historyView.setAttribute('aria-label',record.name+' 历史回看');
+    const historyHeading=el('div','history-heading'),historyTitle=el('span','','screen 历史 · 只读'),historyRefresh=el('button','','刷新'),historyClose=el('button','','返回终端');historyHeading.append(historyTitle,historyRefresh,historyClose);
+    const historyScroll=el('div','history-scroll'),historyText=el('pre');historyScroll.append(historyText);historyView.append(historyHeading,historyScroll);content.append(historyView);
+    win={record,element,term,fit:addon,dot,stateLabel,reconnect,refLabel,ws:null,geometry:{},maximized:false,forwarding,mouse,remoteMouse,mouseFilter:new TerminalMouseFilter(remoteMouse),decoder:new TextDecoder(),live,historyView,historyText,historyScroll,historyRefresh,historyLoading:false,historySerial:0};windows.set(record.id,win);
+    win.scroller=TerminalView.installScroll(term,content,{remoteMouse:()=>win.remoteMouse,historyOpen:()=>!historyView.hidden,lineHeight:()=>content.clientHeight/(term.rows||24),openHistory:()=>openHistory(win),changed:()=>updateScrollState(win),live:()=>returnLive(win)});
+    review.onclick=()=>{if(term.buffer.active.type==='normal'&&term.buffer.active.baseY>0){term.scrollPages(-1);updateScrollState(win);}else openHistory(win);};
+    live.onclick=()=>returnLive(win);historyClose.onclick=()=>returnLive(win);historyRefresh.onclick=()=>openHistory(win,true);
+    historyView.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();returnLive(win);}});
     function updateMouse(){mouse.textContent=win.remoteMouse?'鼠标:远程':'鼠标:本地';mouse.title=win.remoteMouse?'鼠标坐标会发送到远程，点击关闭上报':'已拦截鼠标坐标上报；点击允许远程使用鼠标';}
     updateMouse();mouse.onclick=()=>{win.remoteMouse=!win.remoteMouse;localStorage.setItem('sd-remote-mouse:'+record.id,win.remoteMouse?'1':'0');term.write(win.mouseFilter.setRemote(win.remoteMouse));updateMouse();};
     forwarding.onchange=()=>changeForwarding(win,forwarding.value==='1');
@@ -249,13 +270,14 @@ async function openSession(record, shouldConnect) {
     const offset=(windows.size-1)%7*28;
     applyGeometry(win,{x:record.layout?.x??(22+offset),y:record.layout?.y??(20+offset),width:record.layout?.width??Math.max(360,Math.min(760,$('#viewport').clientWidth-48)),height:record.layout?.height??Math.max(250,Math.min(470,$('#viewport').clientHeight-48))},false);
     term.onData(data=>{const filtered=win.mouseFilter.input(data);if(filtered)send(win,{type:'input',data:filtered});});
-    element.addEventListener('pointerdown',event=>focusWindow(win,false,!event.target.closest('button,select')));
+    element.addEventListener('pointerdown',event=>focusWindow(win,false,!event.target.closest('button,select,.terminal-history')));
     header.addEventListener('pointerdown',event=>{if(!event.target.closest('button,select'))startDrag(event,win,'move');});
     header.ondblclick=event=>{if(!event.target.closest('button,select'))toggleMaximize(win);};
     for(const direction of ['n','s','e','w','ne','nw','se','sw']){const handle=el('div','resize-handle resize-'+direction);handle.onpointerdown=event=>startDrag(event,win,direction);element.append(handle);}
     fontMinus.onclick=()=>changeFont(win,-1);fontPlus.onclick=()=>changeFont(win,1);maximize.onclick=()=>toggleMaximize(win);close.onclick=()=>openClose(win);
     reconnect.onclick=()=>reconnectWindow(win);
     term.attachCustomKeyEventHandler(event=>{
+      if(win.scroller.key(event))return false;
       if(event.type==='keydown' && event.ctrlKey && event.shiftKey && event.code==='KeyC') {navigator.clipboard?.writeText(term.getSelection()).catch(()=>{});return false;}
       return true;
     });
@@ -269,6 +291,22 @@ async function openSession(record, shouldConnect) {
   return win;
 }
 function send(win,data) {if(win.ws?.readyState===WebSocket.OPEN)win.ws.send(JSON.stringify(data));}
+function updateScrollState(win){win.live.hidden=win.historyView.hidden&&win.term.buffer.active.viewportY>=win.term.buffer.active.baseY;}
+function returnLive(win){win.historySerial++;win.historyView.hidden=true;win.term.scrollToBottom();updateScrollState(win);win.term.focus();}
+async function openHistory(win,refresh=false){
+  if(win.historyLoading)return;
+  if(!refresh&&!win.historyView.hidden)return;
+  win.historyView.hidden=false;win.historyView.focus();updateScrollState(win);
+  if(!win.record.ever_ready){win.historyText.textContent='这个窗口尚未建立远程 screen。连接后可回看它保存的历史。';return;}
+  const serial=++win.historySerial;win.historyLoading=true;win.historyRefresh.disabled=true;win.historyText.textContent='正在读取 screen 保留的历史…';
+  try{
+    const data=await api('/api/sessions/'+win.record.id+'/history',{});
+    if(serial!==win.historySerial||!win.element.isConnected)return;
+    win.historyText.textContent=data.text||'screen 尚未保存可回看的内容。';
+    requestAnimationFrame(()=>{if(serial===win.historySerial)win.historyScroll.scrollTop=Math.max(0,win.historyScroll.scrollHeight-win.historyScroll.clientHeight*1.7);});
+  }catch(error){if(serial===win.historySerial)win.historyText.textContent='读取历史未完成：'+error.message+'\n可点刷新重试；终端连接与远程任务保持原状态。';}
+  finally{win.historyLoading=false;win.historyRefresh.disabled=false;}
+}
 async function reconnectWindow(win) {
   if(win.ws && win.ws.readyState<2) return;
   try{const policy=await ensureConnection(win.record.profile,win.forwarding.value==='1');if(policy===null)return;connectTerminal(win,policy);}catch(error){toast(error.message,true);}
@@ -283,6 +321,7 @@ async function changeForwarding(win,policy){
 }
 function connectTerminal(win,forwarding) {
   if(win.ws && win.ws.readyState<2)return;
+  returnLive(win);
   win.mouseFilter=new TerminalMouseFilter(win.remoteMouse);win.decoder=new TextDecoder();win.term.reset();win.term.writeln('\x1b[38;5;109m正在连接 '+win.record.profile.host+' …\x1b[0m\r\n');win.record.forwarding=forwarding;win.forwarding.value=forwarding?'1':'0';
   setState(win,'connecting');
   const socket=new WebSocket('ws://'+location.host+'/ws/'+win.record.id+'?cols='+win.term.cols+'&rows='+win.term.rows+'&forwarding='+(forwarding?'1':'0'),['screen-desk',token]);
@@ -317,7 +356,7 @@ function startDrag(event,win,direction){
   const end=()=>{target.removeEventListener('pointermove',move);target.removeEventListener('pointerup',end);target.removeEventListener('pointercancel',end);document.body.classList.remove('dragging');saveLayout(win);};
   target.addEventListener('pointermove',move);target.addEventListener('pointerup',end);target.addEventListener('pointercancel',end);
 }
-function destroyWindow(id){const win=windows.get(id);if(!win)return;clearTimeout(win.saveTimer);clearInterval(win.heartbeat);win.ws?.close();win.term.dispose();win.element.remove();windows.delete(id);if(selectedWindow===id)selectedWindow=null;updateCanvas();renderSidebar();}
+function destroyWindow(id){const win=windows.get(id);if(!win)return;clearTimeout(win.saveTimer);clearInterval(win.heartbeat);win.historySerial++;win.scroller.dispose();win.ws?.close();win.term.dispose();win.element.remove();windows.delete(id);if(selectedWindow===id)selectedWindow=null;updateCanvas();renderSidebar();}
 async function forgetRecord(id){const win=windows.get(id);if(win)clearTimeout(win.saveTimer);await api('/api/sessions/'+id+'/forget',{});sessions=sessions.filter(r=>r.id!==id);destroyWindow(id);renderSidebar();}
 function renderScreenScan(){
   const list=$('#screen-scan-results');list.replaceChildren();if(!screenScan)return;

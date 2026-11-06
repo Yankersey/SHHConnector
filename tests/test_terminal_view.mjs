@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const context=vm.createContext({});
+vm.runInContext(fs.readFileSync(new URL('../static/terminal-view.js',import.meta.url),'utf8'),context);
+const view=context.TerminalView;
+assert.equal(view.resolveTheme('auto',false),'light');
+assert.equal(view.resolveTheme('auto',true),'dark');
+assert.equal(view.resolveTheme('light',true),'light');
+assert.equal(view.resolveTheme('dark',false),'dark');
+assert.equal(view.palette('light').background,'#ffffff');
+assert.equal(view.palette('dark').background,'#000000');
+const changed=view.palette('light');changed.background='#ff0000';assert.equal(view.palette('light').background,'#ffffff');
+
+let wheel,removed=false,disposed=false,history=0,live=0,changes=0,remoteMouse=false,historyOpen=false;
+const calls=[];
+const term={rows:20,buffer:{active:{type:'normal',baseY:300,viewportY:300}},scrollLines:n=>calls.push(['lines',n]),scrollPages:n=>calls.push(['pages',n]),scrollToTop:()=>calls.push(['top']),onScroll:()=>({dispose:()=>{disposed=true;}})};
+const element={addEventListener:(name,listener,options)=>{assert.equal(name,'wheel');assert.equal(options.capture,true);assert.equal(options.passive,false);wheel=listener;},removeEventListener:()=>{removed=true;}};
+const controller=view.installScroll(term,element,{remoteMouse:()=>remoteMouse,historyOpen:()=>historyOpen,lineHeight:()=>20,openHistory:()=>{history++;},changed:()=>{changes++;},live:()=>{live++;}});
+function event(values={}){return {deltaY:0,deltaMode:0,type:'keydown',shiftKey:false,ctrlKey:false,metaKey:false,altKey:false,preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;},...values};}
+let e=event({deltaY:-80});wheel(e);assert.deepEqual(calls.pop(),['lines',-4]);assert.ok(e.prevented&&e.stopped);
+wheel(event({deltaY:60}));assert.deepEqual(calls.pop(),['lines',3]);
+wheel(event({deltaY:-3,deltaMode:1}));assert.deepEqual(calls.pop(),['lines',-3]);
+wheel(event({deltaY:1,deltaMode:2}));assert.deepEqual(calls.pop(),['lines',20]);
+const before=calls.length;wheel(event({deltaY:.5}));wheel(event({deltaY:.5}));assert.equal(calls.length,before);
+term.buffer.active.type='alternate';e=event({deltaY:-60});wheel(e);assert.equal(history,1);assert.ok(e.prevented);assert.equal(calls.length,before);
+e=event({deltaY:60});wheel(e);assert.ok(e.prevented);assert.equal(history,1);
+remoteMouse=true;e=event({deltaY:-60});wheel(e);assert.ok(!e.prevented);assert.equal(history,1);
+e=event({deltaY:-60,shiftKey:true});wheel(e);assert.equal(history,2);assert.ok(e.prevented);
+historyOpen=true;e=event({deltaY:-60});wheel(e);assert.ok(!e.prevented);assert.equal(history,2);historyOpen=false;
+remoteMouse=false;term.buffer.active.type='normal';
+e=event({key:'PageUp',shiftKey:true});assert.ok(controller.key(e));assert.deepEqual(calls.pop(),['pages',-1]);assert.ok(e.prevented);
+assert.ok(controller.key(event({key:'PageDown',shiftKey:true})));assert.deepEqual(calls.pop(),['pages',1]);
+assert.ok(controller.key(event({key:'Home',shiftKey:true})));assert.deepEqual(calls.pop(),['top']);
+assert.ok(controller.key(event({key:'End',shiftKey:true})));assert.equal(live,1);
+assert.equal(controller.key(event({key:'PageUp'})),false);
+assert.equal(controller.key(event({key:'PageUp',shiftKey:true,ctrlKey:true})),false);
+assert.ok(changes>=6);
+controller.dispose();assert.ok(removed&&disposed);
+console.log('PASS terminal theme and scroll interactions');

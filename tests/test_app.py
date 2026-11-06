@@ -313,6 +313,47 @@ class AppTests(unittest.TestCase):
         try:self.assertNotIn(record['id'],[r['id'] for r in restored.records])
         finally:restored.shutdown()
 
+    def test_16_history_preserves_state_and_reports_connection_failures(self):
+        record=self.ws.record(self.session()['id'])
+        with mock.patch.object(self.ws,'run_ssh') as run:
+            with self.assertRaises(app.UserError):self.ws.history(record['id'])
+            run.assert_not_called()
+        record.update(ever_ready=True,state='detached',screen_ref='123.'+record['remote_name'])
+        with mock.patch.object(self.ws,'run_ssh',return_value=subprocess.CompletedProcess([],0,'第一行\nlast line\n'.encode())):
+            self.assertEqual(self.ws.history(record['id'])['text'],'第一行\nlast line\n')
+        self.assertEqual(record['state'],'detached');self.assertFalse(self.ws.terminals)
+        with mock.patch.object(self.ws,'run_ssh',side_effect=subprocess.TimeoutExpired('ssh',15)):
+            with self.assertRaises(app.UserError):self.ws.history(record['id'])
+        self.assertEqual(record['state'],'detached')
+
+    @unittest.skipUnless(os.environ.get('SCREENDESK_TEST_SCREEN')=='1','requires isolated real screen')
+    def test_17_history_contains_scrollback_and_cleans_remote_temporary_file(self):
+        directory=Path(tempfile.mkdtemp(prefix='sds-',dir='/tmp'))
+        history_temp=self.temp/'history files';history_temp.mkdir()
+        previous=os.environ.get('SCREENDIR');os.environ['SCREENDIR']=str(directory)
+        record=self.ws.record(self.session()['id'])
+        record.update(ever_ready=True,state='detached',screen_ref=record['remote_name'])
+        command="printf 'HISTORY_FIRST_LINE\\n'; i=0; while [ $i -lt 250 ]; do printf 'line %s\\n' \"$i\"; i=$((i+1)); done; printf 'HISTORY_LAST_LINE\\n'; sleep 60"
+        try:
+            subprocess.run(['screen','-U','-h','20000','-d','-m','-S',record['remote_name'],'sh','-c',command],check=True)
+            wait_for(lambda:record['remote_name'].encode() in subprocess.run(['screen','-ls'],capture_output=True).stdout)
+            with mock.patch.dict(os.environ,{'TMPDIR':str(history_temp)}):
+                result=self.ws.history(record['id'])
+            self.assertIn('HISTORY_FIRST_LINE',result['text']);self.assertIn('HISTORY_LAST_LINE',result['text'])
+            self.assertEqual(record['state'],'detached');self.assertFalse(self.ws.terminals)
+            self.assertEqual(list(history_temp.iterdir()),[])
+            listing=subprocess.run(['screen','-ls',record['remote_name']],capture_output=True,text=True,timeout=3).stdout
+            self.assertIn('Detached',listing)
+            subprocess.run(['screen','-S',record['remote_name'],'-X','quit'],capture_output=True,timeout=3)
+            with mock.patch.dict(os.environ,{'TMPDIR':str(history_temp)}):
+                with self.assertRaises(app.UserError):self.ws.history(record['id'])
+            self.assertEqual(list(history_temp.iterdir()),[])
+        finally:
+            subprocess.run(['screen','-S',record['remote_name'],'-X','quit'],capture_output=True,timeout=3)
+            if previous is None:os.environ.pop('SCREENDIR',None)
+            else:os.environ['SCREENDIR']=previous
+            shutil.rmtree(directory,ignore_errors=True)
+
     @unittest.skipUnless(os.environ.get('SCREENDESK_TEST_SCREEN')=='1','requires local socket and real screen')
     def test_08_websocket_input_and_unexpected_socket_drop(self):
         directory=Path(tempfile.mkdtemp(prefix='sds-',dir='/tmp'))
