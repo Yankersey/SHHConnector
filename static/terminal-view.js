@@ -7,6 +7,25 @@
   };
   function resolveTheme(preference,systemDark){return preference==='light'||preference==='dark'?preference:systemDark?'dark':'light';}
   function palette(theme){return {...palettes[theme==='dark'?'dark':'light']};}
+  function history(term,archive=''){
+    const buffer=term.buffer.normal,lines=[];
+    for(let i=Math.max(0,buffer.length-20000);i<buffer.length;i++){
+      const line=buffer.getLine(i);
+      if(!line)continue;
+      const wraps=!!buffer.getLine(i+1)?.isWrapped;
+      lines.push(line.translateToString(!wraps)+(wraps?'':'\n'));
+    }
+    let text=(archive?archive+'\n':'')+lines.join('').replace(/\n+$/,'');
+    const rows=text.split('\n');
+    if(rows.length>20000)text=rows.slice(-20000).join('\n');
+    if(text.length>2097152){
+      let start=text.length-2097152;
+      // Keep a non-BMP character intact at the bounded snapshot's start.
+      if(text.charCodeAt(start)>=0xdc00&&text.charCodeAt(start)<=0xdfff)start++;
+      text=text.slice(start);
+    }
+    return text;
+  }
   function installScroll(term,element,options){
     let remainder=0;
     const alternate=()=>term.buffer.active.type==='alternate';
@@ -40,5 +59,5 @@
     const subscription=term.onScroll(options.changed);
     return {key,dispose(){element.removeEventListener('wheel',wheel,true);subscription.dispose();}};
   }
-  root.TerminalView={resolveTheme,palette,installScroll};
+  root.TerminalView={resolveTheme,palette,history,installScroll};
 })(typeof window==='undefined'?globalThis:window);

@@ -555,57 +555,6 @@ case "$pid" in ''|*[!0-9]*) ;; *)
             raise UserError("诊断 SSH 超时；未操作会话，也未删除 socket")
         return dict(output=result.stdout.decode("utf-8", "replace")[-12000:], exit_code=result.returncode)
 
-    def history(self, identifier):
-        with self.lock:
-            record = dict(self.record(identifier))
-        ref = record.get("screen_ref") or record["remote_name"]
-        if not record.get("ever_ready"):
-            raise UserError("这个窗口尚未建立远程 screen")
-        if not SAFE_REF.fullmatch(ref):
-            raise UserError("无效的 screen 标识")
-        command = remote_deadline_shell() + """umask 077
-sd_history_dir=$(mktemp -d "${TMPDIR:-/tmp}/screendesk-history.XXXXXXXX") || exit 1
-sd_history_file="$sd_history_dir/window.txt"
-trap 'rm -f "$sd_history_file"; rmdir "$sd_history_dir" 2>/dev/null' EXIT
-trap 'exit 129' HUP
-trap 'exit 143' TERM
-sd_ref=%s
-sd_window=$(sd_run screen -S "$sd_ref" -Q number 2>/dev/null)
-sd_query_rc=$?
-case "$sd_query_rc" in 124|137|143) exit "$sd_query_rc" ;; esac
-sd_window=${sd_window%%%% *}
-case "$sd_window" in ''|*[!0-9]*) sd_window=0 ;; esac
-# A detached screen has no display context; select its window explicitly.
-sd_run screen -S "$sd_ref" -p "$sd_window" -X hardcopy -h "$sd_history_file" || exit $?
-sd_wait=0
-while [ ! -f "$sd_history_file" ]; do
-  sd_wait=$((sd_wait+1))
-  [ "$sd_wait" -lt 30 ] || { printf 'screen 没有返回历史内容。\\n' >&2; exit 1; }
-  sleep 0.1
-done
-# hardcopy opens the file before finishing its write; wait for a stable size.
-sd_previous=-1
-sd_stable=0
-sd_wait=0
-while [ "$sd_wait" -lt 30 ]; do
-  sleep 0.1
-  sd_size=$(wc -c < "$sd_history_file")
-  if [ "$sd_size" -eq "$sd_previous" ]; then sd_stable=$((sd_stable+1)); else sd_stable=0; fi
-  [ "$sd_stable" -ge 2 ] && break
-  sd_previous=$sd_size
-  sd_wait=$((sd_wait+1))
-done
-# Keep the response bounded even for very wide windows and custom scrollback settings.
-tail -n 20000 "$sd_history_file" | tail -c 2097152
-""" % shlex.quote(ref)
-        try:
-            result = self.run_ssh(record["profile"], command, record.get("forwarding", False), "读取 screen 历史", 15)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise UserError("读取历史超时，终端与远程任务仍保留") from exc
-        if result.returncode:
-            raise UserError("无法读取 screen 历史："+result.stdout.decode("utf-8", "replace").strip()[-1200:])
-        return dict(text=result.stdout.decode("utf-8", "replace").lstrip("\n"), limit_lines=20000)
-
     def check_session(self, identifier):
         with self.lock:
             record = dict(self.record(identifier))
@@ -1137,11 +1086,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.response(200, workspace.add_discovered_screen(data))
             if path == "/api/screens/ignore":
                 return self.response(200, workspace.ignore_discovered_screen(data))
-            match = re.fullmatch(r"/api/sessions/([0-9a-f]{32})/(close|layout|forget|diagnose|options|check|history)", path)
+            match = re.fullmatch(r"/api/sessions/([0-9a-f]{32})/(close|layout|forget|diagnose|options|check)", path)
             if match:
                 identifier, action = match.groups()
-                if action == "history":
-                    return self.response(200, workspace.history(identifier))
                 if action == "diagnose":
                     return self.response(200, workspace.diagnose(identifier))
                 if action == "check":

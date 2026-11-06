@@ -2,8 +2,9 @@
 (function(root){
   'use strict';
   const mouseModes=new Set([9,1000,1001,1002,1003,1005,1006,1015,1016]);
+  const alternateModes=new Set([47,1047,1049]);
   class TerminalMouseFilter{
-    constructor(remote=false){this.remote=remote;this.sequence='';this.state='text';this.requested=new Map();}
+    constructor(remote=false,{keepScrollback=false}={}){this.remote=remote;this.keepScrollback=keepScrollback;this.sequence='';this.state='text';this.requested=new Map();}
     feed(text){
       let out='';
       for(const char of text){
@@ -31,7 +32,9 @@
           if(match){
             const values=match[1].split(';').map(Number);
             for(const mode of values)if(mouseModes.has(mode))this.requested.set(mode,match[2]==='h');
-            const kept=this.remote?values:values.filter(mode=>!mouseModes.has(mode));
+            // screen owns the remote application's alternate buffer. Its outer
+            // display must stay in xterm's normal buffer so local scrolling works.
+            const kept=values.filter(mode=>(this.remote||!mouseModes.has(mode))&&!(this.keepScrollback&&alternateModes.has(mode)));
             if(kept.length)out+='\x1b[?'+kept.join(';')+match[2];
           }else out+=this.sequence;
           this.sequence='';this.state='text';

@@ -28,4 +28,14 @@ assert.equal(remote.feed('\x1b[?1003;1006h'),'\x1b[?1003;1006h');
 assert.equal(remote.input('\x1b[<35;120;40M'),'\x1b[<35;120;40M');
 assert.ok(remote.setRemote(false).endsWith('l'));
 assert.equal(remote.input('\x1b[<35;120;40M'),'');
+for(const sequence of ['\x1b[?47h','\x1b[?47l','\x1b[?1047h','\x1b[?1049h','\x1b[?1049l','\x1b[?1003;1049;1006h']){
+  for(let split=0;split<=sequence.length;split++){
+    const local=new Filter(false,{keepScrollback:true});
+    assert.equal(local.feed(sequence.slice(0,split))+local.feed(sequence.slice(split)),'');cases++;
+  }
+}
+const scrolling=new Filter(true,{keepScrollback:true});
+assert.equal(scrolling.feed('中文\x1b[?1049;1003;25h│🙂'),'中文\x1b[?1003;25h│🙂');
+assert.equal(scrolling.feed('\x1b[?1049l\x1b[31m彩色\x1b[0m'),'\x1b[31m彩色\x1b[0m');
+assert.equal(scrolling.feed('\x1b]0;\x1b[?1049h\x07'),'\x1b]0;\x1b[?1049h\x07');
 console.log('PASS mouse reporting filter: '+(cases+9)+' checks');

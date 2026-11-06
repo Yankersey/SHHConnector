@@ -13,6 +13,19 @@ assert.equal(view.palette('light').background,'#ffffff');
 assert.equal(view.palette('dark').background,'#000000');
 const changed=view.palette('light');changed.background='#ff0000';assert.equal(view.palette('light').background,'#ffffff');
 
+function terminal(lines){return {buffer:{normal:{length:lines.length,getLine:i=>lines[i]}}};}
+function line(text,isWrapped=false){return {isWrapped,translateToString:trim=>trim?text.trimEnd():text};}
+const unicode=terminal([line('中文 │ café é 🙂'),line('自动换行 '),line('继续',true),line(''),line('')]);
+assert.equal(view.history(unicode),'中文 │ café é 🙂\n自动换行 继续');
+assert.equal(view.history(unicode,'掉线前的中文'),'掉线前的中文\n中文 │ café é 🙂\n自动换行 继续');
+assert.equal(view.history(terminal([])),'');
+const many=Array.from({length:20003},(_,i)=>line('中文第 '+i+' 行'));
+assert.ok(!view.history(terminal(many)).includes('中文第 2 行'));
+assert.ok(view.history(terminal(many)).startsWith('中文第 3 行'));
+assert.ok(view.history(terminal([line('新连接')]),many.map((_,i)=>'旧记录 '+i).join('\n')).split('\n').length<=20000);
+const bounded=view.history(terminal([line('🙂'+'中'.repeat(2097151))]));
+assert.equal(bounded,'中'.repeat(2097151));
+
 let wheel,removed=false,disposed=false,history=0,live=0,changes=0,remoteMouse=false,historyOpen=false;
 const calls=[];
 const term={rows:20,buffer:{active:{type:'normal',baseY:300,viewportY:300}},scrollLines:n=>calls.push(['lines',n]),scrollPages:n=>calls.push(['pages',n]),scrollToTop:()=>calls.push(['top']),onScroll:()=>({dispose:()=>{disposed=true;}})};
@@ -38,4 +51,32 @@ assert.equal(controller.key(event({key:'PageUp'})),false);
 assert.equal(controller.key(event({key:'PageUp',shiftKey:true,ctrlKey:true})),false);
 assert.ok(changes>=6);
 controller.dispose();assert.ok(removed&&disposed);
-console.log('PASS terminal theme and scroll interactions');
+
+// Use the shipped renderer as well as mocks: screen enters an alternate
+// display on attachment even when its remote shell is printing ordinary logs.
+Object.assign(context,{console,setTimeout,clearTimeout,setInterval,clearInterval,TextDecoder,TextEncoder,navigator:{userAgent:'node-tests',platform:'Linux'}});
+context.self=context;context.window=context;
+vm.runInContext(fs.readFileSync(new URL('../static/vendor/xterm.js',import.meta.url),'utf8'),context);
+vm.runInContext(fs.readFileSync(new URL('../static/mouse-filter.js',import.meta.url),'utf8'),context);
+const actual=new context.Terminal({cols:80,rows:24,scrollback:20000,allowProposedAPI:true});
+const filter=new context.TerminalMouseFilter(false,{keepScrollback:true}),decoder=new TextDecoder();
+const output='\x1b[?1049h\x1b[2J\x1b[H'+Array.from({length:300},(_,i)=>'\x1b[32m第 '+i+' 行 │ 中文 café é 🙂\x1b[0m\r\n').join('');
+const encoded=new TextEncoder().encode(output);let rendered='';
+for(let i=0;i<encoded.length;i+=7)rendered+=filter.feed(decoder.decode(encoded.slice(i,i+7),{stream:true}));
+rendered+=filter.feed(decoder.decode());
+await new Promise(resolve=>actual.write(rendered,resolve));
+assert.equal(actual.buffer.active.type,'normal');
+assert.ok(actual.buffer.normal.baseY>250);
+const previous=view.history(actual);
+assert.ok(previous.includes('第 0 行 │ 中文 café é 🙂'));
+assert.ok(previous.includes('第 299 行 │ 中文 café é 🙂'));
+assert.ok(!previous.includes('\ufffd'));
+assert.ok(!previous.includes('\x1b'));
+// A new transport resets terminal state, while the review snapshot retains
+// previously received Unicode without contacting screen's lossy hardcopy path.
+actual.reset();await new Promise(resolve=>actual.write('重新连接后的中文\r\n',resolve));
+const reconnected=view.history(actual,previous);
+assert.ok(reconnected.includes('第 0 行 │ 中文 café é 🙂'));
+assert.ok(reconnected.includes('重新连接后的中文'));
+actual.dispose();
+console.log('PASS terminal Unicode history, theme and scroll interactions');
