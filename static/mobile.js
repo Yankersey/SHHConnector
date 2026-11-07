@@ -35,7 +35,7 @@
         previous=signature;
       }
       select.disabled=!active;if(active)select.value=active.record.id;
-      keybar.querySelectorAll('button').forEach(button=>{button.disabled=!active;});
+      keybar.querySelectorAll('button').forEach(button=>{button.disabled=!active||active.canControl===false;});
     }
     viewport();
     return {isMobile,closeMenu,render};

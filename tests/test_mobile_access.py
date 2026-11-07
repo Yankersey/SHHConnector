@@ -213,11 +213,12 @@ class MobileHTTPTests(unittest.TestCase):
                     pass
                 wait_for(lambda:start.called)
                 terminal = self.ws.terminals[record["id"]]
-                self.assertTrue(terminal.mobile)
+                self.assertTrue(any(p.kind == 'mobile' for p in terminal.ws.viewers.values()))
                 self.server.mobile.stop()
                 self.assertTrue(terminal.stopped)
         finally:
-            sock.shutdown(socket.SHUT_RDWR)
+            try:sock.shutdown(socket.SHUT_RDWR)
+            except OSError:pass
             reader.close()
             sock.close()
 

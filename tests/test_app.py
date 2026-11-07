@@ -42,6 +42,42 @@ class CaptureSocket:
         self.events.append(data)
 
 
+class SharedSocketClient:
+    def __init__(self,server,identifier):
+        self.sock=socket.create_connection(('127.0.0.1',server.server_port));self.sock.settimeout(10)
+        self.reader=self.sock.makefile('rb');self.lock=threading.Lock();self.output=bytearray();self.events=[];self.closed=False
+        request=('GET /ws/%s?forwarding=0&shared=1&cols=80&rows=24 HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: MDEyMzQ1Njc4OWFiY2RlZg==\r\nOrigin: %s\r\nSec-WebSocket-Protocol: screen-desk, %s\r\n\r\n')%(identifier,server.server_port,server.origin,server.workspace.token)
+        self.sock.sendall(request.encode());status=self.reader.readline();assert b'101' in status,status
+        while True:
+            line=self.reader.readline()
+            if line==b'\r\n':break
+            if not line:raise AssertionError('Incomplete WebSocket upgrade')
+        self.thread=threading.Thread(target=self.read,daemon=True);self.thread.start()
+    def send(self,data):
+        raw=json.dumps(data).encode();mask=os.urandom(4);size=len(raw)
+        header=bytes([0x81,0x80|size]) if size<126 else bytes([0x81,0xfe])+struct.pack('!H',size)
+        with self.lock:self.sock.sendall(header+mask+bytes(b^mask[i%4] for i,b in enumerate(raw)))
+    def read(self):
+        try:
+            while not self.closed:
+                header=self.reader.read(2)
+                if len(header)!=2:return
+                opcode=header[0]&15;size=header[1]&127
+                if size==126:size=struct.unpack('!H',self.reader.read(2))[0]
+                elif size==127:size=struct.unpack('!Q',self.reader.read(8))[0]
+                raw=self.reader.read(size)
+                if opcode==2:
+                    self.output.extend(raw[9:]);self.send(dict(type='ack',bytes=len(raw)-9))
+                elif opcode==1:self.events.append(json.loads(raw))
+        except (OSError,ValueError):pass
+    def role(self):return next((e for e in reversed(self.events) if e.get('type')=='sharing'),{})
+    def close(self):
+        self.closed=True
+        try:self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:pass
+        self.sock.close();self.thread.join(timeout=2);self.reader.close()
+
+
 class AppTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -293,6 +329,72 @@ class AppTests(unittest.TestCase):
         finally:
             other.shutdown()
             subprocess.run(['screen','-S',record['remote_name'],'-X','quit'],capture_output=True)
+            if previous is None:os.environ.pop('SCREENDIR',None)
+            else:os.environ['SCREENDIR']=previous
+            shutil.rmtree(directory,ignore_errors=True)
+
+    @unittest.skipUnless(os.environ.get('SCREENDESK_TEST_SCREEN')=='1','requires isolated real screen')
+    def test_16_shared_websockets_one_pty_and_exclusive_keyboard(self):
+        directory=Path(tempfile.mkdtemp(prefix='sds-',dir='/tmp'));previous=os.environ.get('SCREENDIR');os.environ['SCREENDIR']=str(directory)
+        record=self.ws.record(self.session()['id']);self.ws.activate(self.profile['id'],False)
+        server=app.Server(0,self.ws);threading.Thread(target=server.serve_forever,daemon=True).start();clients=[]
+        try:
+            first=SharedSocketClient(server,record['id']);clients.append(first)
+            wait_for(lambda:record['state']=='connected' and first.role().get('control'))
+            terminal=self.ws.terminals[record['id']];pid=terminal.process.pid;ref=record['screen_ref']
+            first.send(dict(type='input',data="SD_SHARED_VALUE=still_here; printf 'SHARED%sREADY\\n' '-'\n"))
+            wait_for(lambda:b'SHARED-READY' in first.output)
+            second=SharedSocketClient(server,record['id']);clients.append(second)
+            wait_for(lambda:second.role().get('viewers')==2 and b'SHARED-READY' in second.output)
+            self.assertFalse(second.role()['control']);self.assertIs(self.ws.terminals[record['id']],terminal)
+            for route,body in [('/api/sessions/'+record['id']+'/close',dict(action='terminate',view_id=second.role()['view_id'])),('/api/sessions/'+record['id']+'/forget',dict(view_id=second.role()['view_id'])),('/api/close-server',dict(profile_id=self.profile['id'],decisions={record['id']:'detach'},view_ids={record['id']:second.role()['view_id']}))]:
+                client=http.client.HTTPConnection('127.0.0.1',server.server_port)
+                client.request('POST',route,body=json.dumps(body),headers={'X-ScreenDesk-Token':self.ws.token,'Content-Type':'application/json'})
+                response=client.getresponse();self.assertEqual(response.status,400);response.read();client.close()
+            self.assertFalse(terminal.stopped)
+            forbidden=self.temp/'forbidden-watcher-input'
+            second.send(dict(type='input',data='touch '+str(forbidden)+'\n'))
+            wait_for(lambda:any(e.get('type')=='notice' for e in second.events));self.assertFalse(forbidden.exists())
+            second.send(dict(type='resize',cols=9,rows=3));time.sleep(.05);self.assertEqual((terminal.cols,terminal.rows),(80,24))
+            second.send(dict(type='control'))
+            wait_for(lambda:second.role().get('control') and first.role().get('control') is False)
+            second.send(dict(type='input',data="printf 'SAME_VALUE=%s\\n' \"$SD_SHARED_VALUE\"\n"))
+            wait_for(lambda:b'SAME_VALUE=still_here' in first.output and b'SAME_VALUE=still_here' in second.output)
+            self.assertEqual(terminal.process.pid,pid);self.assertEqual(record['screen_ref'],ref)
+            client=http.client.HTTPConnection('127.0.0.1',server.server_port)
+            with mock.patch.object(self.ws,'control') as control:
+                client.request('POST','/api/sessions/'+record['id']+'/close',body=json.dumps(dict(action='detach',view_id=first.role()['view_id'])),headers={'X-ScreenDesk-Token':self.ws.token,'Content-Type':'application/json'})
+                response=client.getresponse();self.assertEqual(response.status,200);response.read();client.close();control.assert_not_called()
+            wait_for(lambda:len(terminal.ws.viewers)==1);self.assertFalse(terminal.stopped)
+            second.send(dict(type='input',data="printf 'REMAINING%sVIEW_OK\\n' '-'\n"));wait_for(lambda:b'REMAINING-VIEW_OK' in second.output)
+            second.close();wait_for(lambda:terminal.stopped)
+            listing=subprocess.run(['screen','-ls',ref],capture_output=True,text=True,timeout=3).stdout;self.assertIn(record['remote_name'],listing)
+        finally:
+            for client in clients:client.close()
+            self.ws.shutdown();server.shutdown();server.server_close()
+            subprocess.run(['screen','-S',record['remote_name'],'-X','quit'],capture_output=True,timeout=3)
+            if previous is None:os.environ.pop('SCREENDIR',None)
+            else:os.environ['SCREENDIR']=previous
+            shutil.rmtree(directory,ignore_errors=True)
+
+    @unittest.skipUnless(os.environ.get('SCREENDESK_TEST_SCREEN')=='1','requires isolated real screen')
+    def test_17_explicit_quit_notifies_all_views_and_removes_remote_screen(self):
+        directory=Path(tempfile.mkdtemp(prefix='sds-',dir='/tmp'));previous=os.environ.get('SCREENDIR');os.environ['SCREENDIR']=str(directory)
+        record=self.ws.record(self.session()['id']);self.ws.activate(self.profile['id'],False)
+        server=app.Server(0,self.ws);threading.Thread(target=server.serve_forever,daemon=True).start();clients=[]
+        try:
+            first=SharedSocketClient(server,record['id']);clients.append(first);wait_for(lambda:record['state']=='connected' and first.role().get('control'))
+            second=SharedSocketClient(server,record['id']);clients.append(second);wait_for(lambda:second.role().get('viewers')==2)
+            client=http.client.HTTPConnection('127.0.0.1',server.server_port)
+            client.request('POST','/api/sessions/'+record['id']+'/close',body=json.dumps(dict(action='terminate',view_id=first.role()['view_id'])),headers={'X-ScreenDesk-Token':self.ws.token,'Content-Type':'application/json'})
+            response=client.getresponse();self.assertEqual(response.status,200);response.read();client.close()
+            wait_for(lambda:all(any(e.get('type')=='exit' and e.get('state')=='ended' for e in c.events) for c in clients))
+            self.assertEqual(record['state'],'ended')
+            listing=subprocess.run(['screen','-ls',record['remote_name']],capture_output=True,text=True,timeout=3).stdout;self.assertNotIn(record['remote_name'],listing)
+        finally:
+            for client in clients:client.close()
+            server.shutdown();server.server_close()
+            subprocess.run(['screen','-S',record['remote_name'],'-X','quit'],capture_output=True,timeout=3)
             if previous is None:os.environ.pop('SCREENDIR',None)
             else:os.environ['SCREENDIR']=previous
             shutil.rmtree(directory,ignore_errors=True)
