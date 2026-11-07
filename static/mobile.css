@@ -1,0 +1,55 @@
+.mobile-only,#mobile-scrim{display:none}
+.remote-client #mobile-access,.remote-client #exit-app{display:none}
+#mobile-access-dialog textarea{width:100%;height:110px;resize:none;overflow-wrap:anywhere;font:13px/1.6 monospace;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--terminal);color:var(--terminal-foreground)}
+#mobile-access-status{font-size:13px;line-height:1.7;margin:16px 0}
+#access-dialog .dialog-actions{flex-wrap:wrap}
+#access-remember-label{display:flex;align-items:center;gap:8px;font-size:12px}
+#access-remember-label input{width:auto;margin:0}
+@media(max-width:740px){
+  html,body{width:100%;height:var(--app-height,100dvh);overscroll-behavior:none}
+  body{position:fixed;inset:0;overflow:hidden}
+  .mobile-only{display:flex}
+  main{width:100%;min-height:0}
+  .sidebar{position:fixed;inset:0 auto 0 0;width:min(310px,85vw);min-width:0;transform:translateX(-100%);transition:transform .18s;padding-top:max(18px,env(safe-area-inset-top));z-index:201}
+  .sidebar .brand{margin-bottom:20px}.sidebar .sessions-label{margin-top:16px}
+  .mobile-menu-open .sidebar{transform:translateX(0)}
+  .mobile-menu-open #mobile-scrim{display:block;position:fixed;inset:0;background:#0008;z-index:200}
+  .sidebar-bottom{padding-bottom:max(18px,env(safe-area-inset-bottom))}
+  #mobile-menu{align-items:center;justify-content:center;flex:none;min-width:42px;height:44px;font-size:22px;background:transparent;color:var(--ink);border-radius:5px}
+  .topbar{padding:env(safe-area-inset-top) 8px 0;min-height:50px;height:auto;gap:7px}
+  .breadcrumb{min-width:0;flex:1;overflow:hidden}.breadcrumb strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.breadcrumb span{display:none}
+  .topbar-actions{gap:0}.topbar-actions .private-label,#exit-app,#mobile-access{display:none}
+  #theme-mode{width:88px;height:40px;font-size:12px}
+  .workspace-toolbar{padding:0 7px;min-height:43px;height:43px;overflow:hidden;flex-wrap:nowrap}
+  .workspace-toolbar .view-label{display:none}.workspace-controls{display:flex;flex-wrap:nowrap;overflow-x:auto;width:100%;height:43px;align-items:center;scrollbar-width:none}
+  .workspace-controls button{flex:none;min-height:40px;font-size:12px;white-space:nowrap}
+  #tile-windows,#cascade-windows,#new-window{display:none}
+  #mobile-switcher{gap:7px;padding:5px 8px;align-items:center;background:var(--terminal-bar);border-bottom:1px solid var(--terminal-border);flex:none}
+  #mobile-terminal{flex:1;min-width:0;margin:0;height:40px;font-size:16px;background:var(--terminal);color:var(--terminal-foreground);border:1px solid var(--terminal-border);border-radius:5px;padding:5px 8px}
+  #mobile-new{height:40px;min-width:58px;background:var(--teal);color:#fff;border-radius:5px;font-size:13px}
+  .viewport{width:100%;min-height:0;overflow:hidden;background:var(--terminal);flex:1}
+  #canvas{width:100%!important;height:100%!important;min-height:0}
+  .terminal-window{left:0!important;top:0!important;width:100%!important;height:100%!important;min-width:0;min-height:0;border-radius:0;box-shadow:none}
+  .terminal-window:not(.mobile-active){display:none}
+  .window-titlebar{height:auto;min-height:80px;flex-wrap:wrap;gap:0;padding:0 7px;touch-action:auto}
+  .window-symbol{margin-right:6px}.window-name{height:28px;line-height:28px;font-size:12px}
+  .window-actions{width:100%;justify-content:space-between;height:44px}
+  .window-actions button{width:auto;min-width:40px;height:40px;padding:0 7px;font-size:12px}
+  .window-actions .mouse-button{width:70px;font-size:11px}.window-actions .diagnose-button{width:40px;font-size:11px}.window-actions .font-button{font-size:11px}
+  .window-actions .window-maximize{display:none}.window-forwarding{width:76px;height:36px;font-size:12px}
+  .resize-handle{display:none}.window-footer{min-height:32px;height:32px;gap:6px;padding:0 7px}.window-footer .remote-ref{display:none}
+  .window-footer button{min-height:28px;font-size:11px}.window-footer>span{font-size:10px}
+  .terminal-content{min-height:0;border-radius:0}.terminal-content .xterm{padding:5px 2px 2px 5px}
+  #mobile-keys{flex:none;overflow-x:auto;gap:5px;padding:5px 7px max(5px,env(safe-area-inset-bottom));background:var(--terminal-bar);border-top:1px solid var(--terminal-border);scrollbar-width:none}
+  #mobile-keys button{min-width:44px;height:39px;flex:none;border:1px solid var(--terminal-border);border-radius:5px;background:var(--terminal);color:var(--terminal-foreground);font-size:13px}
+  #mobile-keys button[data-key^="Ctrl"]{min-width:66px}
+  #mobile-keyboard{position:sticky;left:0;z-index:1;min-width:56px!important}
+  .statusbar{display:none}#file-drawer{position:fixed;inset:0;width:100%!important;max-width:100%;z-index:202;box-shadow:none;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}#file-drawer-resize{display:none}
+  .file-nav input{font-size:16px}.file-list{overflow:auto}.file-item{min-height:42px}
+  dialog{max-width:calc(100vw - 20px)!important;width:calc(100vw - 20px);max-height:calc(var(--app-height,100dvh) - 24px);padding:20px;overflow:auto}
+  dialog input,dialog select,dialog textarea{font-size:16px}dialog .primary-button,dialog .secondary-button,dialog .text-button{min-height:42px}
+  .dialog-heading h2{font-size:20px}.history-heading{gap:6px}.history-heading button{min-height:32px}.history-scroll pre{font-size:12px}
+  #toast-container{max-width:calc(100vw - 20px);right:10px;bottom:65px}.toast{max-width:100%;font-size:12px}
+  .mobile-keyboard-open .workspace-toolbar,.mobile-keyboard-open .window-actions{display:none}
+  .mobile-keyboard-open .window-titlebar{min-height:28px}
+}

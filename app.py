@@ -6,6 +6,7 @@ import collections
 import hashlib
 import hmac
 import http.server
+from http.cookies import SimpleCookie, CookieError
 import json
 import mimetypes
 import os
@@ -31,6 +32,7 @@ from platform_support import open_workspace
 from local_runtime import WINDOWS, background_options, open_terminal, system_ssh, try_lock
 from screen_catalog import SAFE_REF, matches_ref, parse_scan, scan_script, session_name, valid_name
 from ssh_auth import AuthError, AuthManager
+from mobile_access import MobileAccess, MobileAccessError
 
 ROOT = Path(__file__).resolve().parent
 SSH = system_ssh()
@@ -675,6 +677,8 @@ case "$pid" in ''|*[!0-9]*) ;; *)
 class Terminal:
     def __init__(self, workspace, record, ws, cols, rows):
         self.workspace, self.record, self.ws = workspace, record, ws
+        self.connection_id = secrets.token_hex(16)
+        self.mobile = False
         self.lock = threading.RLock()
         self.closing = False
         self.stopped = False
@@ -695,6 +699,8 @@ class Terminal:
             pass
 
     def start(self):
+        if self.stopped:
+            return
         marker = secrets.token_hex(16)
         creating = not self.record.get("ever_ready")
         self.command = remote_script(self.record, creating, marker, printable=WINDOWS)
@@ -706,6 +712,8 @@ class Terminal:
         threading.Thread(target=self.read_loop, daemon=True).start()
 
     def open_transport(self):
+        if self.stopped:
+            return
         forwarding = self.record.get("forwarding", False)
         if WINDOWS and forwarding:
             self.workspace.native_tunnels.ensure(self.record["profile"], self)
@@ -943,6 +951,24 @@ class Server(http.server.ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), Handler)
         self.workspace = workspace
         self.origin = "http://127.0.0.1:%d" % self.server_port
+        self.mobile = MobileAccess(self.origin, self.detach_mobile)
+
+    def detach_mobile(self):
+        if not self.workspace or not hasattr(self.workspace, "terminals"):
+            return
+        # Serialize with WebSocket admission, so revocation cannot miss a
+        # connection admitted immediately before its token was withdrawn.
+        with self.workspace.lock:
+            terminals = list(self.workspace.terminals.values())
+        for terminal in terminals:
+            if getattr(terminal, "mobile", False) and not terminal.stopped:
+                terminal.event(type="exit", state="detached")
+                terminal.stop()
+
+    def server_close(self):
+        if hasattr(self, "mobile"):
+            self.mobile.stop()
+        super().server_close()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -955,19 +981,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def valid_host(self):
         return self.headers.get("Host") == "127.0.0.1:%d" % self.server.server_port
 
-    def authorized(self, websocket=False):
+    def auth_kind(self, websocket=False):
         if not self.valid_host():
-            return False
+            return None
         origin = self.headers.get("Origin")
-        if origin is not None and origin != self.server.origin:
-            return False
+        values = [self.headers.get("X-ScreenDesk-Token", "")]
         if websocket:
             protocols = [p.strip() for p in self.headers.get("Sec-WebSocket-Protocol", "").split(",")]
-            return origin == self.server.origin and "screen-desk" in protocols and any(
-                hmac.compare_digest(p, self.server.workspace.token) for p in protocols)
-        return hmac.compare_digest(self.headers.get("X-ScreenDesk-Token", ""), self.server.workspace.token)
+            if "screen-desk" not in protocols or not origin:
+                return None
+            values = protocols
+        if origin in (None, self.server.origin) and any(p.isascii() and hmac.compare_digest(p, self.server.workspace.token) for p in values):
+            return "desktop"
+        if any(self.server.mobile.accepts(value, origin) for value in values):
+            return "mobile"
+        return None
 
-    def response(self, code, body, content_type="application/json; charset=utf-8"):
+    def authorized(self, websocket=False):
+        return self.auth_kind(websocket) is not None
+
+    def response(self, code, body, content_type="application/json; charset=utf-8", headers=()):
         if not isinstance(body, bytes):
             body = json.dumps(body, ensure_ascii=False).encode()
         self.send_response(code)
@@ -977,6 +1010,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -986,10 +1021,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.response(403, dict(error="Host rejected"))
         if path.startswith("/ws/"):
             return self.websocket(path.rsplit("/", 1)[-1])
+        download = re.fullmatch(r"/api/downloads/([0-9a-f]{32})/file", path)
+        if download:
+            return self.download_file(download[1])
+        if path == "/api/mobile":
+            if self.auth_kind() != "desktop":
+                return self.response(403, dict(error="请在电脑本机管理手机访问"))
+            return self.response(200, self.server.mobile.snapshot())
         if path == "/api/workspace":
             if not self.authorized():
                 return self.response(403, dict(error="请从启动器打开工作台"))
-            return self.response(200, self.server.workspace.snapshot())
+            data = self.server.workspace.snapshot()
+            data["client_mode"] = self.auth_kind()
+            # Only the download route accepts this HttpOnly, path-scoped cookie.
+            # APIs and terminal sockets still require their explicit bearer token.
+            value = self.headers.get("X-ScreenDesk-Token", "")
+            cookie = "sd-download=" + value + "; Path=/api/downloads/; HttpOnly; SameSite=Strict"
+            if data["client_mode"] == "mobile":
+                cookie += "; Secure"
+            return self.response(200, data, headers=(("Set-Cookie", cookie),))
         if path == "/api/auth/prompts":
             if not self.authorized():
                 return self.response(403, dict(error="请求未获授权"))
@@ -999,6 +1049,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.response(403, dict(error="请求未获授权"))
             return self.response(200, self.server.workspace.transfers.snapshot())
         assets = {"/": "index.html", "/app.js": "app.js", "/mouse-filter.js": "mouse-filter.js", "/terminal-view.js": "terminal-view.js", "/style.css": "style.css",
+                  "/mobile.js": "mobile.js", "/mobile.css": "mobile.css", "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg",
                   "/vendor/xterm.js": "vendor/xterm.js", "/vendor/xterm.css": "vendor/xterm.css",
                   "/vendor/addon-fit.js": "vendor/addon-fit.js"}
         if path not in assets:
@@ -1006,6 +1057,78 @@ class Handler(http.server.BaseHTTPRequestHandler):
         file = ROOT / "static" / assets[path]
         mime = mimetypes.guess_type(str(file))[0] or "application/octet-stream"
         return self.response(200, file.read_bytes(), mime + "; charset=utf-8")
+
+    def download_file(self, identifier):
+        value = self.headers.get("X-ScreenDesk-Token", "")
+        if not value:
+            cookie = SimpleCookie()
+            try:
+                cookie.load(self.headers.get("Cookie", ""))
+                value = cookie["sd-download"].value if "sd-download" in cookie else ""
+            except CookieError:
+                value = ""
+        origin = self.headers.get("Origin")
+        mobile = self.server.mobile.accepts(value, origin)
+        desktop = origin in (None, self.server.origin) and value.isascii() and hmac.compare_digest(value, self.server.workspace.token)
+        if not (mobile or desktop):
+            return self.response(403, dict(error="下载链接已失效，请重新连接工作台"))
+        manager = self.server.workspace.transfers
+        with manager.lock:
+            job = next((dict(j) for j in manager.jobs if j["id"] == identifier), None)
+        if not job or job["state"] != "completed":
+            return self.response(404, dict(error="文件尚未下载完成"))
+        path = Path(job["local_path"])
+        try:
+            if path.is_symlink() or path.resolve().parent != manager.folder.resolve():
+                raise OSError("Invalid download path")
+            stream = path.open("rb")
+        except OSError:
+            return self.response(404, dict(error="电脑上的下载文件已不存在"))
+        with stream:
+            metadata = os.fstat(stream.fileno())
+            size = metadata.st_size
+            etag = '"%x-%x"' % (size, metadata.st_mtime_ns)
+            start, end, status = 0, size-1, 200
+            requested = self.headers.get("Range")
+            if requested and self.headers.get("If-Range", etag) == etag:
+                match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", requested) if len(requested) < 100 else None
+                valid = bool(match and (match[1] or match[2]) and size)
+                if valid:
+                    if match[1]:
+                        start = int(match[1]);end = min(end, int(match[2])) if match[2] else end
+                    else:
+                        suffix = int(match[2]);start = max(0, size-suffix);valid = suffix > 0
+                    valid = valid and 0 <= start <= end < size
+                if not valid:
+                    return self.response(416, dict(error="请求的文件范围无效"), headers=(("Content-Range", "bytes */%d" % size),))
+                status = 206
+            self.send_response(status)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", "attachment; filename=download; filename*=UTF-8''" + urllib.parse.quote(job["name"], safe=""))
+            self.send_header("Content-Length", str(end-start+1))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if status == 206:
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+            self.end_headers()
+            stream.seek(start)
+            remaining = end-start+1
+            try:
+                while remaining:
+                    if mobile and not self.server.mobile.accepts(value, origin):
+                        self.close_connection = True
+                        return
+                    block = stream.read(min(128*1024, remaining))
+                    if not block:
+                        self.close_connection = True
+                        return
+                    self.wfile.write(block)
+                    remaining -= len(block)
+            except (OSError, ConnectionError):
+                self.close_connection = True
 
     def read_json(self):
         size = bounded_int(self.headers.get("Content-Length", "0"), 1, 131072, "请求大小")
@@ -1025,6 +1148,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             data = self.read_json()
             path = urllib.parse.urlsplit(self.path).path
+            if path in ("/api/mobile/start", "/api/mobile/stop", "/api/shutdown") and self.auth_kind() != "desktop":
+                return self.response(403, dict(error="此操作仅能在电脑本机完成"))
+            if path == "/api/mobile/start":
+                return self.response(200, self.server.mobile.start())
+            if path == "/api/mobile/stop":
+                return self.response(200, self.server.mobile.stop())
+            claim = re.fullmatch(r"/api/sessions/([0-9a-f]{32})/connection", path)
+            if claim:
+                with workspace.lock:
+                    record = workspace.record(claim[1])
+                    previous = workspace.terminals.get(record["id"])
+                    if not previous or previous.stopped:
+                        return self.response(200, dict(occupied=False))
+                    if not data.get("takeover"):
+                        return self.response(200, dict(occupied=True, owner=previous.connection_id))
+                    if data.get("takeover") is not True or data.get("owner") != previous.connection_id:
+                        raise UserError("原连接已发生变化，请重新选择接续")
+                    previous.event(type="exit", state="detached")
+                    record["state"] = "detached"
+                    workspace.save()
+                previous.stop()
+                return self.response(200, dict(occupied=False))
             auth_match = re.fullmatch(r"/api/auth/([0-9a-f]{32})/answer", path)
             if auth_match:
                 cancel = data.get("cancel", False)
@@ -1116,14 +1261,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
                 return
             return self.response(404, dict(error="Not found"))
-        except (UserError, SFTPError, AuthError) as exc:
+        except (UserError, SFTPError, AuthError, MobileAccessError) as exc:
             self.response(400, dict(error=str(exc)))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.response(500, dict(error="操作失败：" + str(exc)))
 
     def websocket(self, identifier):
         self.close_connection = True
-        if not self.authorized(True):
+        client_kind = self.auth_kind(True)
+        if not client_kind:
             return self.response(403, dict(error="WebSocket request rejected"))
         if (self.headers.get("Upgrade", "").lower() != "websocket" or
                 "upgrade" not in self.headers.get("Connection", "").lower() or
@@ -1138,6 +1284,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         workspace = self.server.workspace
         try:
             with workspace.lock:
+                if self.auth_kind(True) != client_kind:
+                    raise UserError("访问密钥已失效，请重新打开工作台")
                 record = workspace.record(identifier)
                 workspace.require_active(record["profile_id"], profile=record["profile"])
                 if record["state"] == "ended":
@@ -1158,6 +1306,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 rows = bounded_int(query.get("rows", [24])[0], 1, 500, "行数")
                 ws = WebSocket(self)
                 terminal = Terminal(workspace, record, ws, cols, rows)
+                terminal.mobile = client_kind == "mobile"
                 workspace.terminals[identifier] = terminal
         except UserError as exc:
             return self.response(409, dict(error=str(exc)))
