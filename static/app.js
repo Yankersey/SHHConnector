@@ -556,7 +556,7 @@ $('#downloads-button').onclick=()=>{showDialog($('#downloads-dialog'));refreshDo
 
 async function boot(){
   if(!token){showDialog($('#access-dialog'));return;}
-  try{const data=await api('/api/workspace');remoteClient=data.client_mode==='mobile';document.body.classList.toggle('remote-client',remoteClient);$('.private-label').lastChild.textContent=remoteClient?' 手机远程访问':' 仅本机访问';$('#build-version').textContent=data.build?' · '+data.build:'';absorb(data);selectedProfile=profiles.find(p=>p.id===sessionStorage.getItem('sd-profile'))?.id||data.active_profile?.id||profiles[0]?.id||null;
+  try{const data=await api('/api/workspace');remoteClient=data.client_mode==='mobile';document.body.classList.toggle('remote-client',remoteClient);$('.private-label').lastChild.textContent=remoteClient?' 手机远程访问':' 电脑后台';$('#build-version').textContent=data.build?' · '+data.build:'';absorb(data);selectedProfile=profiles.find(p=>p.id===sessionStorage.getItem('sd-profile'))?.id||data.active_profile?.id||profiles[0]?.id||null;
     // Restore layout without making a connection before the forwarding question.
     for(const record of currentSessions())if(record.layout?.visible)await openSession(record,false);
     setFilesOpen(!mobile?.isMobile()&&localStorage.getItem('sd-files-open')==='1');renderSidebar();currentWindows().forEach(fit);refreshDownloads();clearInterval(downloadsTimer);downloadsTimer=setInterval(refreshDownloads,1800);pollSSHAuth();clearInterval(authTimer);authTimer=setInterval(pollSSHAuth,500);return true;
