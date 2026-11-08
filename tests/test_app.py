@@ -505,6 +505,8 @@ class AppTests(unittest.TestCase):
                         pid=int(child[0])
                     self.fail('attempt=%s state=%s events=%r output=%r listing=%r processes=%r' % (attempt,record['state'],captured.events,bytes(captured.output),listing,details))
                 if attempt==0:
+                    terminal.write("printf '__SD_COLOR_%s_%s__\\n' \"$TERM\" \"$(tput colors)\"\n")
+                    wait_for(lambda:b'__SD_COLOR_screen-256color_256__' in captured.output)
                     terminal.write("SD_PERSISTED=still-here\nprintf 'INITIAL%sOK\\n' '-'\n")
                     wait_for(lambda:b'INITIAL-OK' in captured.output)
                     terminal.stop() # Simulate socket loss, without a screen command.

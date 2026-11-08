@@ -110,7 +110,7 @@ case "$list_rc" in 0|1) ;; *) printf 'screen 查询未完成，拒绝重复新�
 if ! printf '%s\\n' "$listing" | awk -v name="$target" '
   $1 ~ /^[0-9]+[.]/ { s=$1; sub(/^[0-9]+[.]/,"",s); if (s == name) found=1 }
   END { exit !found }'; then
-  sd_run screen -U -h 20000 -d -m -S "$target" || exit $?
+  sd_run screen -U -T screen-256color -h 20000 -d -m -S "$target" || exit $?
 fi
 # Wait for the daemon socket, and force hangup preservation even with a custom screenrc.
 n=0
