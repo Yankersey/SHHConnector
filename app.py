@@ -306,10 +306,15 @@ class Workspace:
 
     def snapshot(self):
         with self.lock:
+            shared = {}
+            for identifier, terminal in self.terminals.items():
+                if not terminal.stopped and isinstance(terminal.ws, SharedTerminal) and not terminal.ws.closed:
+                    shared[identifier] = dict(connection_id=terminal.connection_id,
+                                              forwarding=bool(terminal.record.get("forwarding")))
             return json.loads(json.dumps(dict(profiles=self.profiles, sessions=[r for r in self.records if r["state"] != "ended"],
                               active_profile=self.active_profile, forwarding=self.active_forwarding,
                               connections=self.connections, ssh_config_path=str(self.ssh_config), config_notes=self.config_notes,
-                              build=self.build)))
+                              build=self.build, shared=shared)))
 
     @staticmethod
     def connection_key(profile):
@@ -1087,7 +1092,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.response(403, dict(error="请求未获授权"))
             return self.response(200, self.server.workspace.transfers.snapshot())
         assets = {"/": "index.html", "/app.js": "app.js", "/mouse-filter.js": "mouse-filter.js", "/terminal-view.js": "terminal-view.js", "/terminal-input.js": "terminal-input.js", "/style.css": "style.css",
-                  "/mobile.js": "mobile.js", "/mobile.css": "mobile.css", "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg", "/sharing.js": "sharing.js",
+                  "/mobile.js": "mobile.js", "/mobile.css": "mobile.css", "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg", "/sharing.js": "sharing.js", "/workspace-sync.js": "workspace-sync.js",
                   "/vendor/xterm.js": "vendor/xterm.js", "/vendor/xterm.css": "vendor/xterm.css",
                   "/vendor/addon-fit.js": "vendor/addon-fit.js", "/vendor/addon-serialize.js": "vendor/addon-serialize.js",
                   "/vendor/addon-unicode11.js": "vendor/addon-unicode11.js"}
@@ -1372,6 +1377,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 terminal = workspace.terminals.get(identifier)
                 creating = not terminal or terminal.stopped
                 if creating:
+                    if query.get("observe") == ["1"]:
+                        raise UserError("原终端连接已断开；请点击重新连接，远程 screen 和任务仍会保留")
                     if len([t for t in workspace.terminals.values() if not t.stopped]) >= 32:
                         raise UserError("最多同时打开 32 个终端窗口")
                     record["forwarding"] = forwarding == "1"

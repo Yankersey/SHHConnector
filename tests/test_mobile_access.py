@@ -222,6 +222,44 @@ class MobileHTTPTests(unittest.TestCase):
             reader.close()
             sock.close()
 
+    def test_observe_only_race_never_starts_a_new_ssh_connection(self):
+        profile = app.clean_profile(dict(host="isolated-test"))
+        self.ws.profiles.append(profile)
+        record = self.ws.new_session(dict(profile_id=profile["id"], name="observe race"))
+        self.ws.activate(profile["id"], False)
+        sock = socket.create_connection(("127.0.0.1", self.server.server_port), timeout=3)
+        reader = sock.makefile("rb")
+        try:
+            with mock.patch.object(app.Terminal, "start") as start:
+                request = ("GET /ws/" + record["id"] + "?forwarding=0&shared=1&observe=1 HTTP/1.1\r\n"
+                           "Host: 127.0.0.1:%d\r\n" % self.server.server_port +
+                           "Origin: " + self.server.mobile.origin + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                           "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: MDEyMzQ1Njc4OWFiY2RlZg==\r\n"
+                           "Sec-WebSocket-Protocol: screen-desk, " + self.server.mobile.token + "\r\n\r\n")
+                sock.sendall(request.encode())
+                self.assertIn(b"409", reader.readline())
+                start.assert_not_called()
+                self.assertNotIn(record["id"], self.ws.terminals)
+        finally:
+            reader.close()
+            sock.close()
+
+    def test_desktop_and_mobile_snapshots_advertise_the_same_live_transport(self):
+        profile = app.clean_profile(dict(host="isolated-test"))
+        self.ws.profiles.append(profile)
+        record = self.ws.new_session(dict(profile_id=profile["id"], name="shared metadata"))
+        hub = app.SharedTerminal(80, 24)
+        terminal = app.Terminal(self.ws, record, hub, 80, 24)
+        hub.terminal = terminal
+        self.ws.terminals[record["id"]] = terminal
+        desktop = json.loads(self.request("/api/workspace", self.ws.token)[2])
+        phone = json.loads(self.request("/api/workspace", self.server.mobile.token)[2])
+        self.assertEqual(desktop["shared"], phone["shared"])
+        self.assertEqual(phone["shared"][record["id"]],
+                         dict(connection_id=terminal.connection_id, forwarding=False))
+        terminal.stopped = True
+        self.assertFalse(self.ws.snapshot()["shared"])
+
     def test_explicit_takeover_requires_current_connection_and_never_quits_screen(self):
         profile = app.clean_profile(dict(host="isolated-test"))
         self.ws.profiles.append(profile)
