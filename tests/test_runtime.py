@@ -37,6 +37,35 @@ def wait_for(predicate, timeout=10):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_windows_input_keeps_protocol_and_never_recodes_legacy_coordinates(self):
+        transport = local_runtime.WindowsTerminal.__new__(local_runtime.WindowsTerminal)
+        transport.pty = mock.Mock()
+        transport.write("中文\x1b[1;2D")
+        transport.write(b"\x1b[M\x60\x2f\x26")
+        self.assertEqual(transport.pty.write.call_args_list,[
+            mock.call("中文\x1b[1;2D"),mock.call("\x1b[M\x60\x2f\x26")])
+        with self.assertRaises(UnicodeDecodeError):
+            transport.write(b"\x1b[M\x60\x99\x29")
+        self.assertEqual(transport.pty.write.call_count,2)
+
+    @unittest.skipIf(os.name == "nt", "POSIX byte-oriented PTY")
+    def test_raw_mouse_bytes_are_not_recoded_as_keyboard_text(self):
+        code = ("import os,tty; tty.setraw(0); print('READY',flush=True); "
+                "data=os.read(0,64); print('HEX:'+data.hex(),flush=True)")
+        transport = local_runtime.open_terminal([sys.executable, "-u", "-c", code], 160, 30, dict(os.environ))
+        output = bytearray()
+        def found(marker):
+            chunk = transport.read(.2)
+            if chunk:
+                output.extend(chunk)
+            return marker in output
+        try:
+            wait_for(lambda: found(b"READY"))
+            transport.write(b"\x1b[M\x60\x99\x29")
+            wait_for(lambda: found(b"HEX:1b5b4d609929"))
+        finally:
+            transport.close()
+
     def test_loopback_http_binding_does_not_depend_on_dns(self):
         with mock.patch("socket.getfqdn", side_effect=AssertionError("Unexpected DNS lookup")):
             server = app.Server(0, None)

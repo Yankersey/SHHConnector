@@ -39,19 +39,15 @@ assert.equal(scrolling.feed('中文\x1b[?1049;1003;25h│🙂'),'中文\x1b[?100
 assert.equal(scrolling.feed('\x1b[?1049l\x1b[31m彩色\x1b[0m'),'\x1b[31m彩色\x1b[0m');
 assert.equal(scrolling.feed('\x1b]0;\x1b[?1049h\x07'),'\x1b]0;\x1b[?1049h\x07');
 const wheelOnly=new Filter(false,{keepScrollback:true});
-assert.equal(wheelOnly.wheel(true,15,6,31,29),'');
 assert.equal(wheelOnly.feed('\x1b[?1000;1006h'),'');
-assert.equal(wheelOnly.wheel(true,15,6,31,29),'\x1b[<64;15;6M');
-assert.equal(wheelOnly.wheel(false,112,36,90,70),'\x1b[<65;112;36M');
 assert.equal(wheelOnly.input('\x1b[<35;15;6M'),''); // pointer motion stays local
 assert.equal(wheelOnly.snapshotModes(),'\x1b[?1000;1006h');
 wheelOnly.feed('\x1b[?1006l');
-assert.equal(wheelOnly.wheel(true,15,6,31,29),'\x1b[M`/&');
-assert.equal(wheelOnly.wheel(false,200,100,110,120),'\x1b[Ma\x7f\x7f');
+assert.equal(wheelOnly.snapshotModes(),'\x1b[?1000h');
 wheelOnly.feed('\x1b[?1016h');
-assert.equal(wheelOnly.wheel(false,15,6,31,29),'\x1b[<65;31;29M');
+assert.equal(wheelOnly.snapshotModes(),'\x1b[?1000;1016h');
 wheelOnly.feed('\x1bc');
 assert.equal(wheelOnly.snapshotModes(),'');
 wheelOnly.feed('\x1b[?9h');
-assert.equal(wheelOnly.acceptsWheel(),false);
+assert.equal(wheelOnly.snapshotModes(),'\x1b[?9h');
 console.log('PASS mouse reporting filter: '+(cases+9)+' checks');

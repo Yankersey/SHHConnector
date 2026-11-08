@@ -62,7 +62,7 @@ reader.sharing.output(frame(marginSnapshot.text,1,true));
 await flush(reader.term);
 assert.equal(reader.term.buffer.active.cursorX,7);
 assert.equal(reader.term.buffer.active.cursorY,3);
-assert.equal(reader.filter.wheel(true,3,3,20,20),'\x1b[<64;3;3M');
+assert.equal(reader.filter.snapshotModes(),'\x1b[?1000;1006h');
 assert.equal(reader.term.modes.mouseTrackingMode,'none');
 for(const client of [controller,reader]){
   client.sharing.output(frame('\r\n新回复',2));

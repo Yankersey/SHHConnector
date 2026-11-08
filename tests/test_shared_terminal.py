@@ -110,6 +110,28 @@ class SharedTerminalTests(unittest.TestCase):
         self.assertTrue(b.closed);self.assertFalse(a.closed);self.assertIsNone(self.hub.owner);self.assertFalse(self.hub.terminal.stopped)
         self.hub.control(first);self.hub.input(first,'PC');self.assertEqual(self.hub.terminal.writes,['PC'])
 
+    def test_binary_mouse_and_unicode_keyboard_remain_distinct(self):
+        first, socket = self.viewer()
+        second, observer = self.viewer('mobile')
+        self.hub.input(first, '草稿写到一半')
+        self.hub.input(first, '\x1b[M\x60\x99\x29', binary=True)
+        self.hub.input(first, '\x1b[1;2D')
+        self.hub.input(first, '继续打字')
+        self.assertEqual(self.hub.terminal.writes, [
+            '草稿写到一半', b'\x1b[M\x60\x99\x29', '\x1b[1;2D', '继续打字'])
+        self.hub.input(second, '\x1b[M\x60\x99\x29', binary=True)
+        self.assertEqual(len(self.hub.terminal.writes), 4)
+        with self.assertRaises(ValueError):
+            self.hub.input(first, '中文', binary=True)
+
+    def test_unsupported_binary_input_leaves_keyboard_connection_usable(self):
+        first, socket = self.viewer()
+        with mock.patch.object(self.hub.terminal, "write", side_effect=UnicodeDecodeError("ascii",b"\x99",0,1,"legacy mouse")):
+            self.hub.input(first, '\x1b[M\x60\x99\x29', binary=True)
+        self.hub.input(first,"继续打字")
+        self.assertEqual(self.hub.terminal.writes,["继续打字"])
+        self.assertFalse(first.closed)
+
     def test_simultaneous_claims_have_one_input_owner(self):
         first,a=self.viewer();second,b=self.viewer('mobile')
         threads=[threading.Thread(target=self.hub.control,args=(peer,)) for peer in [first,second]*20]

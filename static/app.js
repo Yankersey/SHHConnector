@@ -263,11 +263,11 @@ async function openSession(record, shouldConnect) {
     const actions=el('div','window-actions');
     const forwarding=el('select','window-forwarding');forwarding.title='本窗口端口转发；更改后仅此窗口分离并重新连接';forwarding.setAttribute('aria-label',record.name+' 端口转发');
     for(const [value,text] of [['0','转发:关'],['1','转发:开']]){const option=el('option','',text);option.value=value;forwarding.append(option);}forwarding.value=record.forwarding?'1':'0';
-    const mouse=el('button','mouse-button'),diagnose=el('button','diagnose-button','诊断');diagnose.title='只检查当前 screen，不结束任务';
+    const diagnose=el('button','diagnose-button','诊断');diagnose.title='只检查当前 screen，不结束任务';
     const fontMinus=el('button','font-button','A−'),fontPlus=el('button','font-button','A＋'),maximize=el('button','','□'),close=el('button','window-close','×');
     maximize.classList.add('window-maximize');
     fontMinus.title='缩小字号';fontPlus.title='增大字号';maximize.title='最大化 / 还原';close.title='分离或结束 screen';
-    actions.append(forwarding,mouse,diagnose,fontMinus,fontPlus,maximize,close);header.append(actions);
+    actions.append(forwarding,diagnose,fontMinus,fontPlus,maximize,close);header.append(actions);
     const content=el('div','terminal-content'),footer=el('div','window-footer');
     const dot=el('i','state-dot'),stateLabel=el('span'),reconnect=el('button','window-reconnect','重新连接'),refLabel=el('span','remote-ref');
     const review=el('button','window-review','回看'),live=el('button','window-live','回到底部');review.title='回看本窗口已收到的内容；滚轮 / Shift+PageUp 翻页';live.hidden=true;
@@ -278,37 +278,29 @@ async function openSession(record, shouldConnect) {
     const addon=new FitAddon.FitAddon(),serializer=new SerializeAddon.SerializeAddon();term.loadAddon(addon);term.loadAddon(serializer);term.open(content);term.options.disableStdin=true;
     const input=term.textarea;
     input.setAttribute('autocapitalize','none');input.setAttribute('autocorrect','off');input.spellcheck=false;
-    const remoteMouse=localStorage.getItem('sd-remote-mouse:'+record.id)==='1';
     const historyView=el('div','terminal-history');historyView.hidden=true;historyView.tabIndex=0;historyView.setAttribute('aria-label',record.name+' 历史回看');
     const historyHeading=el('div','history-heading'),historyTitle=el('span','','本窗口历史 · 只读'),historyRefresh=el('button','','刷新'),historyClose=el('button','','返回终端');historyHeading.append(historyTitle,historyRefresh,historyClose);
     historyTitle.title='保留本窗口已收到的内容；服务器更早的记录可按 Ctrl+A，再按 [ 回看。';
     const historyScroll=el('div','history-scroll'),historyText=el('pre');historyScroll.append(historyText);historyView.append(historyHeading,historyScroll);content.append(historyView);
-    win={record,element,term,serializer,fit:addon,dot,stateLabel,reconnect,refLabel,roleLabel,control,canControl:false,viewId:null,viewerCount:0,ws:null,geometry:{},maximized:false,forwarding,mouse,remoteMouse,mouseFilter:new TerminalMouseFilter(remoteMouse,{keepScrollback:true}),decoder:new TextDecoder(),live,historyView,historyText,historyScroll,historyRefresh,historyArchive:'',hasOutput:false,historyLoading:false,historySerial:0};windows.set(record.id,win);
+    win={record,element,term,serializer,fit:addon,dot,stateLabel,reconnect,refLabel,roleLabel,control,canControl:false,viewId:null,viewerCount:0,ws:null,geometry:{},maximized:false,forwarding,mouseFilter:new TerminalMouseFilter(true,{keepScrollback:true}),decoder:new TextDecoder(),live,historyView,historyText,historyScroll,historyRefresh,historyArchive:'',hasOutput:false,historyLoading:false,historySerial:0};windows.set(record.id,win);
     TerminalView.installScreenHistory(term,end=>{
       if(win.hasOutput&&end)win.historyArchive=TerminalView.history(term,win.historyArchive,end);
     });
     win.inputGate=ScreenDeskMobile.bindInput(input,()=>mobile.render(currentWindows(),selectedWindow));
     win.inputGate.refresh(false,mobile.manualInput());
     control.onclick=()=>send(win,{type:'control',release:win.canControl});
-    const programWheel=TerminalView.programWheel(term,$('.xterm-screen',content),{
-      filter:()=>win.mouseFilter,
-      canSend:()=>win.canControl&&win.ws?.readyState===WebSocket.OPEN,
-      send:data=>send(win,{type:'input',data})
-    });
-    win.scroller=TerminalView.installScroll(term,content,{programWheel,nativePan:event=>{
+    win.scroller=TerminalView.installScroll(term,content,{nativePan:event=>{
       if(win.canControl||win.ws?.readyState!==WebSocket.OPEN)return false;
       return event.deltaY<0?content.scrollTop>0:content.scrollTop+content.clientHeight<content.scrollHeight-1;
-    },remoteMouse:()=>win.canControl&&win.remoteMouse,historyOpen:()=>!historyView.hidden,hasArchive:()=>!!win.historyArchive,lineHeight:()=>$('.xterm-screen',content).offsetHeight/(term.rows||24),openHistory:()=>openHistory(win,false,true),changed:()=>updateScrollState(win),live:()=>returnLive(win)});
+    },remoteMouse:()=>win.canControl&&term.modes.mouseTrackingMode!=='none',historyOpen:()=>!historyView.hidden,hasArchive:()=>!!win.historyArchive,lineHeight:()=>$('.xterm-screen',content).offsetHeight/(term.rows||24),openHistory:()=>openHistory(win,false,true),changed:()=>updateScrollState(win),live:()=>returnLive(win)});
     review.onclick=()=>openHistory(win);
     live.onclick=()=>returnLive(win);historyClose.onclick=()=>returnLive(win);historyRefresh.onclick=()=>openHistory(win,true);
     historyView.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();returnLive(win);}});
-    function updateMouse(){mouse.textContent=win.remoteMouse?'鼠标:远程':'鼠标:本地';mouse.title=win.remoteMouse?'鼠标坐标会发送到远程；Shift+滚轮回看本地历史':'移动和点击留在本地；程序支持时滚轮在程序内滚动，Shift+滚轮回看本地历史。点击可开启远程鼠标。';}
-    updateMouse();mouse.onclick=()=>{win.remoteMouse=!win.remoteMouse;localStorage.setItem('sd-remote-mouse:'+record.id,win.remoteMouse?'1':'0');term.write(win.mouseFilter.setRemote(win.remoteMouse));updateMouse();};
     forwarding.onchange=()=>changeForwarding(win,forwarding.value==='1');
     diagnose.onclick=async()=>{showDialog($('#diagnostic-dialog'));$('#diagnostic-output').textContent='正在检查当前会话…';try{const result=await api('/api/sessions/'+record.id+'/diagnose',{});$('#diagnostic-output').textContent=result.output||'服务器没有返回诊断输出';}catch(error){$('#diagnostic-output').textContent=error.message;}};
     const offset=(windows.size-1)%7*28;
     applyGeometry(win,{x:record.layout?.x??(22+offset),y:record.layout?.y??(20+offset),width:record.layout?.width??Math.max(360,Math.min(760,$('#viewport').clientWidth-48)),height:record.layout?.height??Math.max(250,Math.min(470,$('#viewport').clientHeight-48))},false);
-    term.onData(data=>{const filtered=win.mouseFilter.input(data);if(filtered)send(win,{type:'input',data:filtered});});
+    TerminalInput.install(term,data=>send(win,data));
     element.addEventListener('pointerdown',event=>focusWindow(win,false,!event.target.closest('button,select,.terminal-history')));
     header.addEventListener('pointerdown',event=>{if(!event.target.closest('button,select'))startDrag(event,win,'move');});
     header.ondblclick=event=>{if(!event.target.closest('button,select'))toggleMaximize(win);};
@@ -385,12 +377,12 @@ async function connectTerminal(win,forwarding) {
 function openTransport(win,forwarding){
   returnLive(win,!mobile?.isMobile());
   if(win.hasOutput)win.historyArchive=TerminalView.history(win.term,win.historyArchive);
-  win.hasOutput=false;win.mouseFilter=new TerminalMouseFilter(win.remoteMouse,{keepScrollback:true});win.decoder=new TextDecoder();win.term.reset();win.term.writeln('\x1b[38;5;109m正在连接 '+win.record.profile.host+' …\x1b[0m\r\n');win.record.forwarding=forwarding;win.forwarding.value=forwarding?'1':'0';
+  win.hasOutput=false;win.mouseFilter=new TerminalMouseFilter(true,{keepScrollback:true});win.decoder=new TextDecoder();win.term.reset();win.term.writeln('\x1b[38;5;109m正在连接 '+win.record.profile.host+' …\x1b[0m\r\n');win.record.forwarding=forwarding;win.forwarding.value=forwarding?'1':'0';
   setState(win,'connecting');
   win.canControl=false;win.viewId=null;win.term.options.disableStdin=true;win.control.disabled=true;win.roleLabel.textContent='同步中';
   const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/'+win.record.id+'?cols='+win.term.cols+'&rows='+win.term.rows+'&forwarding='+(forwarding?'1':'0')+'&shared=1',['screen-desk',token]);
   win.ws=socket;socket.binaryType='arraybuffer';let hadOpen=false,heartbeat=null;
-  win.sharing=new TerminalSharing(win.term,win.serializer,{filter:()=>win.mouseFilter,send:message=>{if(win.ws===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify(message));},reset:()=>{win.mouseFilter=new TerminalMouseFilter(win.remoteMouse,{keepScrollback:true});},geometry:()=>{sizeReader(win);updateScrollState(win);},role:(data,replaying)=>{if(win.ws===socket)applySharing(win,data,replaying);}});
+  win.sharing=new TerminalSharing(win.term,win.serializer,{filter:()=>win.mouseFilter,send:message=>{if(win.ws===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify(message));},reset:()=>{win.mouseFilter=new TerminalMouseFilter(true,{keepScrollback:true});},geometry:()=>{sizeReader(win);updateScrollState(win);},role:(data,replaying)=>{if(win.ws===socket)applySharing(win,data,replaying);}});
   socket.onopen=()=>{if(win.ws!==socket)return;hadOpen=true;fit(win);if(!mobile?.manualInput())win.term.focus();heartbeat=setInterval(()=>{if(win.ws===socket)send(win,{type:'ping'});},15000);win.heartbeat=heartbeat;};
   socket.onmessage=event=>{
     if(win.ws!==socket)return;

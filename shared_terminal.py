@@ -234,14 +234,23 @@ class SharedTerminal:
             return bool(peer and not peer.closed and peer.ready and self.owner == identifier and
                         (kind is None or peer.kind == kind))
 
-    def input(self, peer, text):
-        if not isinstance(text, str):
+    def input(self, peer, text, binary=False):
+        if not isinstance(text, str) or not isinstance(binary, bool):
             raise ValueError("无效的终端输入")
+        if binary:
+            try:
+                text = text.encode("latin-1")
+            except UnicodeEncodeError as exc:
+                raise ValueError("无效的二进制终端输入") from exc
         with self.lock:
             if not self.allows(peer.id):
                 peer.enqueue(("json", self.seq, dict(type="notice", message="当前为只读，请先接管操作")))
                 return
-            self.terminal.write(text)
+            try:
+                self.terminal.write(text)
+            except UnicodeError:
+                peer.enqueue(("json", self.seq, dict(type="notice",
+                    message="本机 Windows 终端通道无法传递这个旧版鼠标编码；键盘输入仍可使用。")))
 
     def control(self, peer, release=False):
         with self.lock:

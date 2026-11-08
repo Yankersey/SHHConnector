@@ -75,7 +75,7 @@ class PosixTerminal:
             return b""
 
     def write(self, value):
-        data = memoryview(value.encode("utf-8"))
+        data = memoryview(value if isinstance(value, bytes) else value.encode("utf-8"))
         deadline = time.monotonic() + 2
         while data:
             remaining = deadline - time.monotonic()
@@ -125,6 +125,11 @@ class WindowsTerminal:
 
     def write(self, value):
         # ConPTY accepts Unicode rather than POSIX byte-oriented input.
+        if isinstance(value, bytes):
+            # This API cannot write arbitrary bytes. ASCII remains exact.
+            # Reject an unsupported legacy packet instead of recoding its
+            # coordinate bytes or changing the negotiated mouse protocol.
+            value = value.decode("ascii")
         self.pty.write(value)
 
     def resize(self, cols, rows):

@@ -1080,7 +1080,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authorized():
                 return self.response(403, dict(error="请求未获授权"))
             return self.response(200, self.server.workspace.transfers.snapshot())
-        assets = {"/": "index.html", "/app.js": "app.js", "/mouse-filter.js": "mouse-filter.js", "/terminal-view.js": "terminal-view.js", "/style.css": "style.css",
+        assets = {"/": "index.html", "/app.js": "app.js", "/mouse-filter.js": "mouse-filter.js", "/terminal-view.js": "terminal-view.js", "/terminal-input.js": "terminal-input.js", "/style.css": "style.css",
                   "/mobile.js": "mobile.js", "/mobile.css": "mobile.css", "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg", "/sharing.js": "sharing.js",
                   "/vendor/xterm.js": "vendor/xterm.js", "/vendor/xterm.css": "vendor/xterm.css",
                   "/vendor/addon-fit.js": "vendor/addon-fit.js", "/vendor/addon-serialize.js": "vendor/addon-serialize.js",
@@ -1401,7 +1401,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise UserError("无效的终端消息")
                 kind = message.get("type")
                 if kind == "input":
-                    hub.input(peer, message.get("data"))
+                    hub.input(peer, message.get("data"), binary=message.get("binary", False))
                 elif kind == "resize":
                     hub.resize(peer, message.get("cols"), message.get("rows"))
                 elif kind == "control":

@@ -56,18 +56,6 @@
       const modes=[this.tracking,this.encoding].filter(Boolean);
       return modes.length?'\x1b[?'+modes.join(';')+'h':'';
     }
-    acceptsWheel(){return this.tracking!==0&&this.tracking!==9;}
-    wheel(up,column,row,pixelX,pixelY){
-      if(!this.acceptsWheel())return '';
-      const button=up?64:65;
-      if(this.encoding===1016)return '\x1b[<'+button+';'+pixelX+';'+pixelY+'M';
-      if(this.encoding===1006)return '\x1b[<'+button+';'+column+';'+row+'M';
-      if(this.encoding===1015)return '\x1b['+(button+32)+';'+column+';'+row+'M';
-      // The legacy protocol is byte-based. Keep the coordinate bytes ASCII
-      // on our UTF-8 input path. Modern SGR reports use the full coordinates.
-      const limit=this.encoding===1005?2015:95;
-      return '\x1b[M'+String.fromCharCode(button+32,Math.min(column,limit)+32,Math.min(row,limit)+32);
-    }
     input(text){
       if(this.remote)return text;
       return text.replace(/\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[M[\s\S]{3}|\x1b\[\d+;\d+;\d+M/g,'');
