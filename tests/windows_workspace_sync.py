@@ -98,7 +98,7 @@ def main():
 
         desktop = webview.create_window("ScreenDesk desktop sync test", url=server.origin + "/#token=" + workspace.token,
                                         width=1100, height=760)
-        phone = webview.create_window("ScreenDesk phone sync test", url=server.mobile.origin + "/#token=" + server.mobile.token,
+        phone = webview.create_window("ScreenDesk phone sync test", url="about:blank",
                                       width=420, height=760, min_size=(360, 500))
 
         def evaluate(window, expression):
@@ -107,7 +107,9 @@ def main():
         resources = {desktop.uid: [], phone.uid: []}
         for window in (desktop, phone):
             def response_received(response, target=window):
-                resources[target.uid].append((str(response.url).split("#")[0], response.status_code, response.headers))
+                if "/api/" not in str(response.url):
+                    resources[target.uid].append((str(response.url).split("#")[0], response.status_code,
+                                                  response.headers.get("Content-Type")))
             window.events.response_received += response_received
 
         def wait(window, expression, label):
@@ -126,9 +128,15 @@ def main():
             try:
                 identifier = json.dumps(record["id"])
                 wait(desktop, "windows.size===1", "desktop restored window")
-                wait(phone, "windows.size===1", "phone restored same window")
                 evaluate(desktop, "reconnectWindow(windows.get(%s)); true" % identifier)
                 wait(desktop, "windows.get(%s).canControl" % identifier, "desktop connected and owns input")
+                # A real terminal accumulates many small PTY reads before the
+                # phone joins. Replaying these must not overflow the WS queue.
+                for index in range(600):
+                    workspace.terminals[record["id"]].ws.send_frame(2, ("history %s\r\n" % index).encode())
+                    time.sleep(.002)
+                phone.load_url(server.mobile.origin + "/#token=" + server.mobile.token)
+                wait(phone, "windows.size===1", "phone restored same window")
                 wait(phone, "windows.get(%s).ws?.readyState===1 && !windows.get(%s).sharing.replaying" %
                      (identifier, identifier), "phone automatically joins existing desktop PTY")
                 assert len(started) == 1, started

@@ -872,7 +872,8 @@ class Terminal:
 class WebSocket:
     def __init__(self, handler):
         self.reader, self.sock = handler.rfile, handler.connection
-        self.send_lock = threading.Lock()
+        self.send_lock = threading.RLock()
+        self.send_condition = threading.Condition(self.send_lock)
         self.closed = False
         self.outgoing = queue.Queue(maxsize=128)
         self.buffered = 0
@@ -881,7 +882,9 @@ class WebSocket:
         threading.Thread(target=self.writer, daemon=True).start()
 
     def abort(self):
-        self.closed = True
+        with self.send_condition:
+            self.closed = True
+            self.send_condition.notify_all()
         try:
             self.sock.shutdown(socket.SHUT_RDWR)
         except OSError:
@@ -898,10 +901,11 @@ class WebSocket:
                 self.sock.sendall(payload)
                 with self.send_lock:
                     self.buffered -= len(payload)
+                    self.send_condition.notify_all()
         except OSError:
             self.abort()
 
-    def send_frame(self, opcode, payload):
+    def send_frame(self, opcode, payload, wait=False):
         with self.send_lock:
             if self.closed:
                 raise OSError("WebSocket closed")
@@ -910,14 +914,31 @@ class WebSocket:
             head += bytes([size]) if size < 126 else (b"\x7e" + struct.pack("!H", size)
                         if size <= 65535 else b"\x7f" + struct.pack("!Q", size))
             frame = head + payload
-            if self.buffered+len(frame) > 1024*1024 or self.outgoing.full():
-                self.abort()
-                raise OSError("浏览器输出阻塞，已安全分离终端")
+            deadline = time.monotonic() + 10
+            while self.buffered+len(frame) > 1024*1024 or self.outgoing.full():
+                if self.closed:
+                    raise OSError("WebSocket closed")
+                remaining = deadline - time.monotonic()
+                if not wait or remaining <= 0 or len(frame) > 1024*1024:
+                    self.abort()
+                    raise OSError("浏览器输出阻塞，已安全分离此观看页面")
+                # A replay can contain hundreds of tiny output / resize frames
+                # while still being well below the byte credit. Wait only in
+                # that viewer's sender, never in the shared PTY output reader.
+                self.send_condition.wait(min(.25, remaining))
+            if self.closed:
+                raise OSError("WebSocket closed")
             self.buffered += len(frame)
             self.outgoing.put_nowait(frame)
 
     def send_json(self, data):
         self.send_frame(1, json.dumps(data, ensure_ascii=False).encode())
+
+    def send_frame_wait(self, opcode, payload):
+        self.send_frame(opcode, payload, wait=True)
+
+    def send_json_wait(self, data):
+        self.send_frame_wait(1, json.dumps(data, ensure_ascii=False).encode())
 
     def read_exact(self, size):
         result = bytearray()
@@ -948,7 +969,7 @@ class WebSocket:
             if opcode == 8:
                 return
             if opcode == 9:
-                self.send_frame(10, payload)
+                self.send_frame_wait(10, payload)
                 continue
             if opcode == 10:
                 continue
@@ -1425,7 +1446,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif kind == "snapshot":
                     hub.snapshot(peer, message)
                 elif kind == "ping":
-                    ws.send_json(dict(type="pong"))
+                    peer.enqueue(("json", hub.seq, dict(type="pong")))
                 elif kind == "ack":
                     peer.ack(message.get("bytes"))
                 else:

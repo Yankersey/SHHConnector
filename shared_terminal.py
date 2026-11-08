@@ -59,6 +59,8 @@ class VTBoundary:
 class Viewer:
     def __init__(self, hub, ws, kind, modern, initial):
         self.hub, self.ws, self.kind, self.modern = hub, ws, kind, modern
+        self.send_frame = getattr(ws, "send_frame_wait", ws.send_frame)
+        self.send_json = getattr(ws, "send_json_wait", ws.send_json)
         self.id = secrets.token_hex(16)
         self.initial = initial
         self.condition = threading.Condition()
@@ -103,7 +105,7 @@ class Viewer:
                     self.last_ack = time.monotonic()
                 self.pending += len(block)
             prefix = struct.pack("!BQ", int(snapshot), seq) if self.modern else b""
-            self.ws.send_frame(2, prefix+block)
+            self.send_frame(2, prefix+block)
 
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
@@ -112,14 +114,14 @@ class Viewer:
         try:
             cols, rows, snapshot_seq, snapshot, journal, end, state = self.initial
             self.initial = None
-            self.ws.send_json(dict(type="replay_start", cols=cols, rows=rows))
+            self.send_json(dict(type="replay_start", cols=cols, rows=rows))
             if snapshot:
                 self._output(snapshot_seq, snapshot, True)
             for kind, seq, payload in journal:
                 if kind == "output":
                     self._output(seq, payload)
                 else:
-                    self.ws.send_json(payload)
+                    self.send_json(payload)
             # The initial frame is parsed before accepting keyboard input.
             with self.condition:
                 while self.pending and not self.closed:
@@ -129,8 +131,8 @@ class Viewer:
                 if self.closed:
                     return
                 self.ready = True
-            self.ws.send_json(dict(type="replay_end", seq=end))
-            self.ws.send_json(state)
+            self.send_json(dict(type="replay_end", seq=end))
+            self.send_json(state)
             while True:
                 with self.condition:
                     while not self.queue and not self.closed:
@@ -143,7 +145,7 @@ class Viewer:
                 if kind == "output":
                     self._output(seq, payload)
                 else:
-                    self.ws.send_json(payload)
+                    self.send_json(payload)
                     if payload.get("type") == "exit":
                         deadline = time.monotonic()+1
                         while getattr(self.ws, "buffered", 0) and time.monotonic() < deadline:

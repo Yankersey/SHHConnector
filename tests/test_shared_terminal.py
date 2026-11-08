@@ -1,9 +1,13 @@
+import io
+import json
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
 import shared_terminal as shared
+from app import WebSocket
 
 
 def wait_for(predicate):
@@ -138,6 +142,60 @@ class SharedTerminalTests(unittest.TestCase):
         for thread in threads:thread.start()
         for thread in threads:thread.join()
         self.assertEqual(sum(self.hub.allows(p.id) for p in (first,second)),1)
+
+    def test_long_small_frame_replay_waits_for_writer_without_blocking_owner(self):
+        owner, original = self.viewer()
+        for index in range(300):
+            self.hub.send_frame(2, b"x")
+            self.hub.resize(owner, 80 + index % 2, 24)
+            time.sleep(.001)
+
+        class DelayedWire:
+            def __init__(self):
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = False
+                self.messages = []
+                self.peer = None
+
+            def sendall(self, frame):
+                self.started.set()
+                if not self.release.wait(4) or self.closed:
+                    raise OSError("fixture closed")
+                opcode = frame[0] & 15
+                size = frame[1] & 127
+                offset = 2 if size < 126 else (4 if size == 126 else 10)
+                payload = frame[offset:]
+                if opcode == 2:
+                    self.peer.ack(len(payload) - 9)
+                elif opcode == 1:
+                    self.messages.append(json.loads(payload))
+
+            def shutdown(self, unused):
+                self.closed = True
+                self.release.set()
+
+        wire = DelayedWire()
+        ws = WebSocket(SimpleNamespace(rfile=io.BytesIO(), connection=wire))
+        peer = self.hub.add(ws, "mobile")
+        wire.peer = peer
+        try:
+            ws.start()
+            peer.start()
+            self.assertTrue(wire.started.wait(2))
+            wait_for(lambda: ws.closed or ws.outgoing.full())
+            self.assertFalse(ws.closed, "Replay filled frame slots before exhausting its byte credit")
+            self.assertLess(ws.buffered, 128 * 1024)
+            self.hub.input(owner, "OWNER CONTINUES")
+            self.assertEqual(self.hub.terminal.writes, ["OWNER CONTINUES"])
+            self.assertFalse(original.closed)
+            wire.release.set()
+            wait_for(lambda: peer.ready and any(message["type"] == "sharing" for message in wire.messages))
+            self.assertFalse(ws.closed)
+            self.assertEqual(self.hub.owner, owner.id)
+        finally:
+            wire.release.set()
+            self.hub.remove(peer.id)
 
 
 class BoundaryTests(unittest.TestCase):
