@@ -7,6 +7,24 @@
   };
   function resolveTheme(preference,systemDark){return preference==='light'||preference==='dark'?preference:systemDark?'dark':'light';}
   function palette(theme){return {...palettes[theme==='dark'?'dark':'light']};}
+  function preserveTopScroll(term){
+    // GNU screen can render Codex's upper-region scroll as DL (CSI M).
+    // The bundled xterm 5.5 drops those rows and SU (CSI S) rows. Use the
+    // same buffer scroll as a line feed to retain the actual styled cells.
+    const {_bufferService:bufferService,_inputHandler:input}=term._core;
+    function scroll(params,deleting){
+      const buffer=bufferService.buffer;
+      if(!buffer.hasScrollback||buffer.scrollTop!==0||(deleting&&buffer.y!==0))return false;
+      const count=Math.min(params[0]||1,buffer.scrollBottom+1);
+      const erase=input._eraseAttrData();
+      for(let i=0;i<count;i++)bufferService.scroll(erase);
+      if(deleting)buffer.x=0;
+      input.markRangeDirty(0,buffer.scrollBottom);
+      return true;
+    }
+    term.parser.registerCsiHandler({final:'M'},params=>scroll(params,true));
+    term.parser.registerCsiHandler({final:'S'},params=>scroll(params,false));
+  }
   function history(term,archive=''){
     const buffer=term.buffer.normal,lines=[];
     for(let i=Math.max(0,buffer.length-20000);i<buffer.length;i++){
@@ -60,5 +78,5 @@
     const subscription=term.onScroll(options.changed);
     return {key,dispose(){element.removeEventListener('wheel',wheel,true);subscription.dispose();}};
   }
-  root.TerminalView={resolveTheme,palette,history,installScroll};
+  root.TerminalView={resolveTheme,palette,preserveTopScroll,history,installScroll};
 })(typeof window==='undefined'?globalThis:window);

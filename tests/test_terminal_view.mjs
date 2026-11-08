@@ -79,4 +79,43 @@ const reconnected=view.history(actual,previous);
 assert.ok(reconnected.includes('第 0 行 │ 中文 café é 🙂'));
 assert.ok(reconnected.includes('重新连接后的中文'));
 actual.dispose();
+
+// GNU screen represents an upward scroll above Codex's composer as CSI M
+// at the first row. A direct terminal can receive CSI S for the same scroll.
+const write=(term,text)=>new Promise(resolve=>term.write(text,resolve));
+const visible=term=>Array.from({length:term.rows},(_,row)=>{
+  const buffer=term.buffer.active;
+  return buffer.getLine(buffer.baseY+row).translateToString(false);
+});
+for(const command of ['\x1b[1;4r\x1b[1;5H\x1b[2M','\x1b[1;4r\x1b[8;5H\x1b[2S']){
+  const fixed=new context.Terminal({cols:40,rows:8,scrollback:20});
+  const baseline=new context.Terminal({cols:40,rows:8,scrollback:20});
+  view.preserveTopScroll(fixed);
+  fixed.reset(); // A reconnect resets the renderer without removing the fix.
+  const initial='\x1b[32m较早的回复 🙂\x1b[0m\r\n旧回复 B\r\n旧回复 C\r\n旧回复 D\x1b[8;1Hcomposer';
+  for(const term of [fixed,baseline]){
+    await write(term,initial+command.slice(0,-1));
+    await write(term,command.slice(-1));
+  }
+  assert.deepEqual(visible(fixed),visible(baseline));
+  assert.equal(fixed.buffer.active.cursorX,baseline.buffer.active.cursorX);
+  assert.equal(fixed.buffer.active.cursorY,baseline.buffer.active.cursorY);
+  assert.ok(!view.history(baseline).includes('较早的回复'));
+  assert.equal(fixed.buffer.normal.baseY,2);
+  assert.equal(fixed.buffer.normal.getLine(0).getCell(0).getFgColor(),2);
+  assert.match(view.history(fixed),/^较早的回复 🙂\n旧回复 B\n旧回复 C/);
+  // Headless xterm has no DOM viewport. Set the same scroll state directly.
+  fixed._core._bufferService.scrollLines(-2);
+  await write(fixed,'\x1b[1;1H\x1b[S');
+  assert.equal(fixed.buffer.normal.viewportY,0);
+  // A non-top scroll region and line edits below the first row stay local.
+  await write(fixed,'\x1b[2;4r\x1b[S\x1b[r\x1b[2;1H\x1b[M');
+  assert.equal(fixed.buffer.normal.baseY,3);
+  await write(fixed,'\x1b[3J');
+  assert.equal(fixed.buffer.normal.baseY,0);
+  await write(fixed,'\x1b[?1049h\x1b[H\x1b[S\x1b[M\x1b[?1049l');
+  assert.equal(fixed.buffer.normal.baseY,0);
+  fixed.dispose();
+  baseline.dispose();
+}
 console.log('PASS terminal Unicode history, theme and scroll interactions');
