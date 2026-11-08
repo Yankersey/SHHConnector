@@ -28,6 +28,37 @@ let authTimer=null,authPolling=false,authAnswerBusy=false,activeAuth=null;
 let screenScan = null, scanBusy = false, scanSerial = 0;
 const profilePolicies = new Map();
 const connections = new Map();
+let workspaceTimer=null,workspacePolling=false,workspaceMutation=0;
+const workspaceSync=new WorkspaceSync({
+  views:()=>windows,
+  apply:data=>{
+    absorb(data);
+    if(!profiles.some(profile=>profile.id===selectedProfile))selectedProfile=profiles[0]?.id||null;
+    for(const win of windows.values()){
+      const record=sessions.find(record=>record.id===win.record.id);
+      if(record)Object.assign(win.record,record);
+      win.element.hidden=win.record.profile_id!==selectedProfile;
+    }
+  },
+  open:record=>openSession(record,false,false),
+  remove:win=>destroyWindow(win.record.id),
+  connected:win=>win.connectingGuard||(win.ws&&win.ws.readyState<2),
+  observe:(win,live)=>connectTerminal(win,live.forwarding,true),
+  render:()=>{updateCanvas();renderSidebar();}
+});
+async function syncWorkspace(){
+  if(shuttingDown||!token||workspacePolling||document.hidden)return;
+  workspacePolling=true;const mutation=workspaceMutation;
+  try{
+    const data=await api('/api/workspace');
+    if(mutation===workspaceMutation)await workspaceSync.sync(data);
+    if($('#app-status').classList.contains('fatal'))$('#app-status').textContent='工作区已同步';
+    $('#app-status').classList.remove('fatal');
+  }catch(error){
+    $('#app-status').textContent=error.status===403?'访问链接已失效，请从电脑重新获取手机链接':'工作台连接中断，正在等待电脑后台；可保留页面稍后重试';
+    $('#app-status').classList.add('fatal');
+  }finally{workspacePolling=false;}
+}
 function currentSessions(){return sessions.filter(r=>r.profile_id===selectedProfile&&r.state!=='ended');}
 function currentWindows(){return [...windows.values()].filter(w=>w.record.profile_id===selectedProfile);}
 function absorb(data){
@@ -65,11 +96,17 @@ function toast(text, error = false) {
 }
 async function api(path, data) {
   const options = {headers:{'X-ScreenDesk-Token':token || ''}};
-  if (data !== undefined) Object.assign(options, {method:'POST', body:JSON.stringify(data), headers:{...options.headers, 'Content-Type':'application/json'}});
-  const response = await fetch(path, options);
-  const result = await response.json();
-  if (!response.ok) {const error=new Error(result.error || '操作失败');error.status=response.status;throw error;}
-  return result;
+  if (data !== undefined) {workspaceMutation++;Object.assign(options, {method:'POST', body:JSON.stringify(data), headers:{...options.headers, 'Content-Type':'application/json'}});}
+  const bounded=path==='/api/workspace'||path.endsWith('/connection');
+  const controller=bounded?new AbortController():null;
+  if(controller)options.signal=controller.signal;
+  const timer=controller?setTimeout(()=>controller.abort(),8000):null;
+  try{
+    const response=await fetch(path,options),result=await response.json();
+    if(!response.ok){const error=new Error(result.error||'操作失败');error.status=response.status;throw error;}
+    return result;
+  }catch(error){if(error.name==='AbortError')throw new Error('电脑工作台暂时没有响应，请确认电脑后台仍在运行后重试。');throw error;}
+  finally{if(timer)clearTimeout(timer);if(data!==undefined)workspaceMutation++;}
 }
 function errorIn(dialog, error) { $('.form-error', dialog).textContent = error.message || error; }
 function clearError(dialog) { const target = $('.form-error', dialog); if (target) target.textContent = ''; }
@@ -247,17 +284,18 @@ function focusWindow(win, scroll=false, focusTerm=true) {
   selectedWindow=win.record.id;windows.forEach(w=>w.element.classList.toggle('focused',w===win));win.element.style.zIndex=++zIndex;
   renderSidebar();if(scroll&&!mobile?.isMobile())win.element.scrollIntoView({block:'nearest',inline:'nearest'});if(focusTerm&&!mobile?.manualInput())win.term.focus();fit(win);
 }
-function setState(win, state, ref) {
-  win.record.state=state;if(ref){win.record.screen_ref=ref;win.record.ever_ready=true;}
+function setState(win, state, ref, remote=false) {
+  win.connectionState=state;if(remote)win.record.state=state;if(ref){win.record.screen_ref=ref;win.record.ever_ready=true;}
   win.stateLabel.textContent=stateNames[state] || state;win.dot.className='state-dot '+state;
   win.refLabel.textContent=win.record.screen_ref || win.record.remote_name;
   win.reconnect.hidden=state==='connected' || state==='connecting' || state==='ended';renderSidebar();
 }
-async function openSession(record, shouldConnect) {
-  mobile?.closeMenu();
+async function openSession(record, shouldConnect, focus=true) {
+  if(focus)mobile?.closeMenu();
   let win=windows.get(record.id);
   if(!win){
-    const element=el('article','terminal-window');element.setAttribute('aria-label',record.name+' 终端窗口');
+    if(!globalThis.Unicode11Addon||!globalThis.FitAddon||!globalThis.SerializeAddon)throw new Error('终端组件未加载完整，请关闭后重新打开工作台。');
+    const element=el('article','terminal-window');element.setAttribute('aria-label',record.name+' 终端窗口');element.hidden=record.profile_id!==selectedProfile;
     const header=el('div','window-titlebar');
     header.append(el('span','window-symbol','›_'),el('span','window-name',record.name),el('span','window-server',record.profile.name));
     const actions=el('div','window-actions');
@@ -315,10 +353,10 @@ async function openSession(record, shouldConnect) {
     setState(win,record.state==='connected'?'disconnected':record.state);
     term.writeln('\x1b[38;5;109mScreenDesk · '+record.name.replace(/[\x00-\x1f\x7f]/g,'')+'\x1b[0m');
     term.writeln('\x1b[38;5;242m点击“重新连接”恢复远程 screen。\x1b[0m\r\n');
-    saveLayout(win);
+    if(focus)saveLayout(win);
   }
-  focusWindow(win,true,!mobile?.isMobile());
-  if(shouldConnect && (!win.ws || win.ws.readyState>1)) await reconnectWindow(win);
+  if(focus)focusWindow(win,true,!mobile?.isMobile());
+  if(shouldConnect && (!win.ws || win.ws.readyState>1)) {workspaceSync.resume(win.record.id);await reconnectWindow(win);}
   return win;
 }
 function send(win,data) {if(['input','resize'].includes(data.type)&&!win.canControl)return;if(win.ws?.readyState===WebSocket.OPEN)win.ws.send(JSON.stringify(data));}
@@ -351,6 +389,7 @@ async function openHistory(win,refresh=false,older=false){
 }
 async function reconnectWindow(win) {
   if(win.ws && win.ws.readyState<2) return;
+  workspaceSync.resume(win.record.id);
   try{const current=await api('/api/sessions/'+win.record.id+'/connection',{});const policy=current.shared?current.forwarding:await ensureConnection(win.record.profile,win.forwarding.value==='1');if(policy===null)return;connectTerminal(win,policy);}catch(error){toast(error.message,true);}
 }
 async function changeForwarding(win,policy){
@@ -361,40 +400,41 @@ async function changeForwarding(win,policy){
     if(wasConnected){await ensureConnection(win.record.profile,policy);connectTerminal(win,policy);}
   }catch(error){win.forwarding.value=previous?'1':'0';toast(error.message,true);}finally{win.forwarding.disabled=false;}
 }
-async function connectTerminal(win,forwarding) {
+async function connectTerminal(win,forwarding,observeOnly=false) {
   if(win.connectingGuard||(win.ws&&win.ws.readyState<2))return;
   win.connectingGuard=true;
   try{
-    const occupied=await api('/api/sessions/'+win.record.id+'/connection',{});
-    if(occupied.shared)forwarding=occupied.forwarding;
+    if(!observeOnly){const occupied=await api('/api/sessions/'+win.record.id+'/connection',{});if(occupied.shared)forwarding=occupied.forwarding;}
     if(!win.element.isConnected)return;
     await new Promise(resolve=>win.term.write('',resolve));
     if(!win.element.isConnected)return;
-    openTransport(win,forwarding);
+    openTransport(win,forwarding,observeOnly);
   }catch(error){toast(error.message,true);}
   finally{win.connectingGuard=false;}
 }
-function openTransport(win,forwarding){
+function openTransport(win,forwarding,observeOnly=false){
   returnLive(win,!mobile?.isMobile());
   if(win.hasOutput)win.historyArchive=TerminalView.history(win.term,win.historyArchive);
   win.hasOutput=false;win.mouseFilter=new TerminalMouseFilter(true,{keepScrollback:true});win.decoder=new TextDecoder();win.term.reset();win.term.writeln('\x1b[38;5;109m正在连接 '+win.record.profile.host+' …\x1b[0m\r\n');win.record.forwarding=forwarding;win.forwarding.value=forwarding?'1':'0';
   setState(win,'connecting');
   win.canControl=false;win.viewId=null;win.term.options.disableStdin=true;win.control.disabled=true;win.roleLabel.textContent='同步中';
-  const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/'+win.record.id+'?cols='+win.term.cols+'&rows='+win.term.rows+'&forwarding='+(forwarding?'1':'0')+'&shared=1',['screen-desk',token]);
+  const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/'+win.record.id+'?cols='+win.term.cols+'&rows='+win.term.rows+'&forwarding='+(forwarding?'1':'0')+'&shared=1'+(observeOnly?'&observe=1':''),['screen-desk',token]);
   win.ws=socket;socket.binaryType='arraybuffer';let hadOpen=false,heartbeat=null;
+  const connectTimeout=setTimeout(()=>{if(win.ws===socket&&(socket.readyState===WebSocket.CONNECTING||win.sharing?.replaying)){socket.close();toast('终端画面同步超时，请确认电脑网络正常后重新连接。',true);}},30000);
   win.sharing=new TerminalSharing(win.term,win.serializer,{filter:()=>win.mouseFilter,send:message=>{if(win.ws===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify(message));},reset:()=>{win.mouseFilter=new TerminalMouseFilter(true,{keepScrollback:true});},geometry:()=>{sizeReader(win);updateScrollState(win);},role:(data,replaying)=>{if(win.ws===socket)applySharing(win,data,replaying);}});
   socket.onopen=()=>{if(win.ws!==socket)return;hadOpen=true;fit(win);if(!mobile?.manualInput())win.term.focus();heartbeat=setInterval(()=>{if(win.ws===socket)send(win,{type:'ping'});},15000);win.heartbeat=heartbeat;};
   socket.onmessage=event=>{
     if(win.ws!==socket)return;
     if(event.data instanceof ArrayBuffer){win.hasOutput=true;win.sharing.output(event.data);return;}
     const data=JSON.parse(event.data);
+    if(data.type==='replay_end')clearTimeout(connectTimeout);
     if(win.sharing.message(data))return;
     if(data.type==='notice')toast(data.message,true);
-    if(data.type==='state')setState(win,data.state,data.screen_ref);
+    if(data.type==='state')setState(win,data.state,data.screen_ref,true);
     if(data.type==='error')win.term.writeln('\r\n\x1b[31m'+data.message.replace(/[\x00-\x1f\x7f]/g,' ')+'\x1b[0m');
-    if(data.type==='exit') {if(data.state==='ended'){sessions=sessions.filter(record=>record.id!==win.record.id);destroyWindow(win.record.id);renderSidebar();return;}setState(win,data.state);win.term.writeln('\r\n\x1b[38;5;245m连接已断开。远程 screen 不会因掉线被结束；可点击“重新连接”。\x1b[0m');socket.close();}
+    if(data.type==='exit') {if(data.state==='ended'){sessions=sessions.filter(record=>record.id!==win.record.id);destroyWindow(win.record.id);renderSidebar();return;}setState(win,data.state,undefined,true);win.term.writeln('\r\n\x1b[38;5;245m连接已断开。远程 screen 不会因掉线被结束；可点击“重新连接”。\x1b[0m');socket.close();}
   };
-  socket.onclose=()=>{clearInterval(heartbeat);if(win.ws!==socket)return;win.canControl=false;win.term.options.disableStdin=true;win.inputGate.refresh(false,mobile.manualInput());win.control.disabled=true;win.roleLabel.textContent='未连接';win.forwarding.disabled=false;if(windows.has(win.record.id) && !['ended','detached'].includes(win.record.state))setState(win,'disconnected');if(!hadOpen && !shuttingDown)toast('连接未建立，请刷新页面后重试。',true);};
+  socket.onclose=()=>{clearTimeout(connectTimeout);clearInterval(heartbeat);if(win.ws!==socket)return;win.canControl=false;win.term.options.disableStdin=true;win.inputGate.refresh(false,mobile.manualInput());win.control.disabled=true;win.control.textContent='接管操作';win.roleLabel.textContent='未连接';win.forwarding.disabled=false;if(windows.has(win.record.id) && !['ended','detached'].includes(win.connectionState))setState(win,'disconnected');if(!hadOpen && !shuttingDown)toast('终端同步未建立，请确认电脑后台仍运行，再点“重新连接”。',true);};
   socket.onerror=()=>{};
 }
 function changeFont(win,delta){win.term.options.fontSize=Math.max(10,Math.min(28,win.term.options.fontSize+delta));fit(win);saveLayout(win);}
@@ -471,7 +511,7 @@ $('#verify-sessions').onclick=async()=>{
 function openClose(win){closeTarget=win;$('#close-title').textContent='关闭“'+win.record.name+'”';$('#close-description').textContent=win.viewerCount>1?'分离仅关闭这个页面，其他端继续观看。结束 screen 会终止任务并关闭所有观看端。':'请选择服务器上这个 screen 的处理方式。';$('#terminate-button').disabled=!win.record.ever_ready||(win.ws?.readyState===WebSocket.OPEN&&!win.canControl);if($('#forget-button'))$('#forget-button').disabled=win.ws?.readyState===WebSocket.OPEN&&!win.canControl;showDialog($('#close-dialog'));}
 async function closeWindow(action){
   const win=closeTarget;if(!win)return;const dialog=$('#close-dialog');$$('.close-choice:not(.local-record-choice)',dialog).forEach(b=>b.disabled=true);clearError(dialog);clearTimeout(win.saveTimer);
-  try{const record=await api('/api/sessions/'+win.record.id+'/close',{action,view_id:win.viewId});Object.assign(win.record,record);destroyWindow(record.id);dialog.close();toast(action==='detach'?'此页面已分离；远程任务继续运行。':'screen 已结束。');}
+  try{const record=await api('/api/sessions/'+win.record.id+'/close',{action,view_id:win.viewId});Object.assign(win.record,record);if(action==='detach')workspaceSync.pause(record.id);destroyWindow(record.id);dialog.close();toast(action==='detach'?'此页面已分离；远程任务继续运行。':'screen 已结束。');}
   catch(error){errorIn(dialog,error);}finally{$$('#close-dialog .close-choice:not(.local-record-choice)').forEach(b=>b.disabled=false);if(closeTarget===win)$('#terminate-button').disabled=!win.record.ever_ready||(win.ws?.readyState===WebSocket.OPEN&&!win.canControl);}
 }
 $('#detach-button').onclick=()=>closeWindow('detach');$('#terminate-button').onclick=()=>closeWindow('terminate');
@@ -594,9 +634,10 @@ $('#downloads-button').onclick=()=>{showDialog($('#downloads-dialog'));refreshDo
 async function boot(){
   if(!token){showDialog($('#access-dialog'));return;}
   try{const data=await api('/api/workspace');remoteClient=data.client_mode==='mobile';document.body.classList.toggle('remote-client',remoteClient);$('.private-label').lastChild.textContent=remoteClient?' 手机远程访问':' 电脑后台';$('#build-version').textContent=data.build?' · '+data.build:'';absorb(data);selectedProfile=profiles.find(p=>p.id===sessionStorage.getItem('sd-profile'))?.id||data.active_profile?.id||profiles[0]?.id||null;
-    // Restore layout without making a connection before the forwarding question.
-    for(const record of currentSessions())if(record.layout?.visible)await openSession(record,false);
-    setFilesOpen(!mobile?.isMobile()&&localStorage.getItem('sd-files-open')==='1');renderSidebar();currentWindows().forEach(fit);refreshDownloads();clearInterval(downloadsTimer);downloadsTimer=setInterval(refreshDownloads,1800);pollSSHAuth();clearInterval(authTimer);authTimer=setInterval(pollSSHAuth,500);return true;
+    // Join live PTYs for viewing. Saved, disconnected screens still require
+    // deliberate reconnection and the existing forwarding choice.
+    await workspaceSync.sync(data);
+    setFilesOpen(!mobile?.isMobile()&&localStorage.getItem('sd-files-open')==='1');renderSidebar();currentWindows().forEach(fit);refreshDownloads();clearInterval(downloadsTimer);downloadsTimer=setInterval(refreshDownloads,1800);pollSSHAuth();clearInterval(authTimer);authTimer=setInterval(pollSSHAuth,500);clearInterval(workspaceTimer);workspaceTimer=setInterval(syncWorkspace,1500);return true;
   }catch(error){if(error.status===403){sessionStorage.removeItem('sd-token');localStorage.removeItem('sd-access-token');token=null;showDialog($('#access-dialog'));errorIn($('#access-dialog'),'链接或密钥已失效，请从电脑获取新的手机访问链接。');}else{$('#app-status').textContent=error.message;$('#app-status').classList.add('fatal');toast(error.message,true);}return false;}
 }
 
@@ -613,7 +654,8 @@ mobile=ScreenDeskMobile.install({
   closeKeyboard:()=>activeMobileWindow()?.inputGate.close(),
   resize:()=>{mobile?.render(currentWindows(),selectedWindow);updateCanvas();currentWindows().forEach(fit);}
 });
-document.addEventListener('visibilitychange',()=>{if(document.hidden)activeMobileWindow()?.inputGate.close();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)activeMobileWindow()?.inputGate.close();else{workspaceSync.wake();syncWorkspace();}});
+window.addEventListener('online',()=>{workspaceSync.wake();syncWorkspace();});
 $('#access-dialog').addEventListener('cancel',event=>event.preventDefault());
 $('#access-form').onsubmit=async event=>{
   event.preventDefault();const input=$('#access-key'),value=input.value.trim();let candidate=value;

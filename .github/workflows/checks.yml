@@ -31,6 +31,7 @@ jobs:
           node tests/test_terminal_view.mjs
           node tests/test_mobile.mjs
           node tests/test_sharing.mjs
+          node tests/test_workspace_sync.mjs
           node tests/test_terminal_input.mjs
   macos:
     runs-on: macos-26-intel
@@ -57,6 +58,7 @@ jobs:
           node tests/test_terminal_view.mjs
           node tests/test_mobile.mjs
           node tests/test_sharing.mjs
+          node tests/test_workspace_sync.mjs
           node tests/test_terminal_input.mjs
   windows:
     runs-on: windows-latest
@@ -120,10 +122,16 @@ jobs:
           PYTHONUTF8: '1'
           PYTHONDONTWRITEBYTECODE: '1'
         run: python tests/windows_webview_smoke.py
+      - name: Verify desktop and phone workspace synchronization
+        env:
+          PYTHONUTF8: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python tests/windows_workspace_sync.py
       - name: JavaScript mouse protocol tests
         run: |
           node tests/test_mouse.mjs
           node tests/test_terminal_view.mjs
           node tests/test_mobile.mjs
           node tests/test_sharing.mjs
+          node tests/test_workspace_sync.mjs
           node tests/test_terminal_input.mjs
