@@ -1,1 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="40" fill="#17242c"/><rect x="30" y="37" width="132" height="118" rx="15" fill="none" stroke="#9be0c4" stroke-width="8"/><path d="m55 71 23 23-23 23m39 7h39" stroke="#9be0c4" stroke-width="9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="tile" x2="0" y2="1">
+      <stop stop-color="#234552"/>
+      <stop offset="1" stop-color="#0D202D"/>
+    </linearGradient>
+    <linearGradient id="accent" x2="1" y2="1">
+      <stop stop-color="#ADF7DA"/>
+      <stop offset="1" stop-color="#5ADCC3"/>
+    </linearGradient>
+  </defs>
+  <rect x="25" y="25" width="462" height="462" rx="108" fill="url(#tile)" stroke="#365A65" stroke-width="4"/>
+  <rect x="148" y="107" width="270" height="235" rx="33" fill="#15303A" stroke="#58858B" stroke-width="14"/>
+  <rect x="96" y="155" width="296" height="235" rx="32" fill="#0D2430" stroke="url(#accent)" stroke-width="16"/>
+  <path d="M105 212h278" fill="none" stroke="#477776" stroke-width="10"/>
+  <circle cx="135" cy="184" r="7" fill="#A6F2D8"/>
+  <circle cx="160" cy="184" r="7" fill="#58858B"/>
+  <path d="m151 250 39 36-39 36m80 0h89" fill="none" stroke="url(#accent)" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -14,7 +14,7 @@ sh start.sh
 
 也可以在项目目录运行 `sh install-macos-app.sh`，再从 Finder 的个人「应用程序」文件夹打开 **ScreenDesk.app**。应用通过 macOS 终端启动当前项目并打开浏览器。退出后台后再次打开可检查 Git 更新。
 
-Linux 运行 `sh start.sh`。Windows 首次双击 **setup-windows.cmd**，以后双击 **start-windows.cmd**，直接使用 Windows Python、ConPTY 和系统 OpenSSH，无需 WSL / 虚拟机。详见 [Windows 使用说明](WINDOWS.md)；原有 WSL 方式保留为 [start-wsl.cmd](WINDOWS-WSL.md)。服务器需要 SSH、SFTP 和 GNU screen，不需要远程 Python。
+Linux 运行 `sh start.sh`。Windows 首次双击 **setup-windows.cmd**，再双击 **install-windows-shortcuts.cmd**，以后从桌面或开始菜单打开 **ScreenDesk**。原生版直接使用 Windows Python、ConPTY 和系统 OpenSSH，无需 WSL 或虚拟机。详见 [Windows 使用说明](WINDOWS.md)。WSL 方式见 [start-wsl.cmd](WINDOWS-WSL.md)。服务器需要 SSH、SFTP 和 GNU screen，不需要远程 Python。
 
 Git 克隆版本会在启动器启动前检查远程分支并执行快进更新；界面左下角显示提交号。离线 / 开发时显式使用 `sh start.sh --offline`。直接运行 `python3 app.py` 可以启动本地代码，但不会检查 Git 更新。ZIP 版本不包含 .git，因此没有自动更新功能。
 

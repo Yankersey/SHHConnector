@@ -7,7 +7,10 @@
 1. 安装 Windows Python 3.9–3.13（推荐 3.12 / 3.13），确保 PowerShell 中 `python --version` 可用。Windows 需支持 ConPTY（Windows 10 1809+ / Windows 11）。
 2. 确认 `ssh -V` 可用。优先使用 Windows 自带的 OpenSSH Client，无需 SSH Server。
 3. 在项目文件夹双击 **setup-windows.cmd**。它会创建本项目的 `.venv` 并安装 `requirements-windows.txt` 中的 pywinpty，然后启动程序。不需要管理员权限。
-4. 以后双击 **start-windows.cmd**。程序会检查 Git 更新并打开 Windows 默认浏览器；退出请使用工作台里的“退出程序”。
+4. 双击一次 **install-windows-shortcuts.cmd**，给当前用户创建带图标的桌面和开始菜单入口。
+5. 以后从桌面或开始菜单打开 **ScreenDesk**。程序会检查 Git 更新并打开 Windows 默认浏览器；退出请使用工作台里的“退出程序”。
+
+已在用 ScreenDesk 的电脑，更新项目后可直接执行第 4 步。移动项目文件夹后，从新位置再运行一次快捷方式安装脚本。也可在项目文件夹中双击 **start-windows.cmd**。
 
 也可在项目目录的 PowerShell 中运行：
 
@@ -35,7 +38,7 @@ SSH 是否经过代理由现有 SSH 配置和网络路由决定。Windows 的 HT
 
 Windows 的布局与断点保存在项目的 `data/`，文件下载到 `downloads/`；“在本机显示”打开 Windows 文件资源管理器。两台电脑各自保留 SSH 配置、密钥、布局和下载数据，只通过 Git 同步代码。
 
-另一台电脑退出旧程序后重新运行启动器，会快进更新到 `origin/main`。Mac 继续用 `启动 ScreenDesk.command` / `sh start.sh`；Windows 使用 `start-windows.cmd`。
+另一台电脑退出旧程序后重新打开 ScreenDesk，会快进更新到 `origin/main`。Mac 和 Windows 的应用入口都沿用项目里的启动脚本。
 
 ## 验证范围
 

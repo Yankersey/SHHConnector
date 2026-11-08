@@ -7,6 +7,7 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 
 checkout=$(cd "${1:-$(dirname "$0")}" && pwd -P)
+installer=$(cd "$(dirname "$0")" && pwd -P)
 if [ ! -f "$checkout/launcher.py" ] || [ ! -x "$checkout/start.sh" ]; then
   echo '找不到 ScreenDesk 项目，请从项目目录运行这个安装脚本。' >&2
   exit 1
@@ -27,6 +28,7 @@ trap 'rm -rf "$staging"' EXIT
 bundle="$staging/ScreenDesk.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 printf '%s\n' "$checkout" > "$bundle/Contents/Resources/checkout.txt"
+cp "$installer/assets/ScreenDesk.icns" "$bundle/Contents/Resources/ScreenDesk.icns"
 
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -38,7 +40,8 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.yankersey.screendesk</string>
   <key>CFBundleExecutable</key><string>ScreenDesk</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleIconFile</key><string>ScreenDesk.icns</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSUIElement</key><true/>
 </dict>
 </plist>

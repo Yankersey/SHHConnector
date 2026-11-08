@@ -62,6 +62,39 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -r requirements-windows.txt
       - run: python -m pip install -r requirements-test.txt
+      - name: Verify Desktop and Start menu shortcuts
+        shell: powershell
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'ScreenDesk shortcut test'
+          New-Item -ItemType Directory -Path $fixture | Out-Null
+          Copy-Item install-windows-shortcuts.cmd, install-windows-shortcuts.js, assets -Destination $fixture -Recurse
+          Set-Content -Encoding Ascii (Join-Path $fixture 'start-windows.cmd') '@echo launched>shortcut-launch.txt'
+          Push-Location $fixture
+          try {
+            foreach ($attempt in 1, 2) {
+              & cmd.exe /d /c install-windows-shortcuts.cmd --quiet
+              if ($LASTEXITCODE -ne 0) { throw 'Shortcut installation failed' }
+            }
+            $shell = New-Object -ComObject WScript.Shell
+            foreach ($folder in 'DesktopDirectory', 'Programs') {
+              $path = Join-Path ([Environment]::GetFolderPath($folder)) 'ScreenDesk.lnk'
+              if (!(Test-Path -LiteralPath $path)) { throw "Missing shortcut at $path" }
+              $link = $shell.CreateShortcut($path)
+              if ($link.TargetPath -ne (Join-Path $fixture 'start-windows.cmd') -or
+                  $link.WorkingDirectory -ne $fixture -or
+                  ($link.IconLocation -replace ',\s*0$', '') -ne (Join-Path $fixture 'assets\ScreenDesk.ico')) {
+                throw "Unexpected shortcut settings at $path"
+              }
+            }
+            $desktop = [Environment]::GetFolderPath('DesktopDirectory')
+            Start-Process -FilePath (Join-Path $desktop 'ScreenDesk.lnk')
+            for ($attempt = 0; $attempt -lt 50 -and !(Test-Path 'shortcut-launch.txt'); $attempt++) {
+              Start-Sleep -Milliseconds 200
+            }
+            if (!(Test-Path 'shortcut-launch.txt')) { throw 'Shortcut did not run the launcher' }
+          } finally {
+            Pop-Location
+          }
       - name: Native Windows runtime and launcher tests
         env:
           PYTHONDONTWRITEBYTECODE: '1'
