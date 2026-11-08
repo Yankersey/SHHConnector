@@ -16,7 +16,7 @@ function client(){
   let filter=new context.TerminalMouseFilter(false,{keepScrollback:true});const sent=[],roles=[];
   const sharing=new context.TerminalSharing(term,serializer,{filter:()=>filter,send:message=>sent.push(message),reset:()=>{filter=new context.TerminalMouseFilter(false,{keepScrollback:true});},geometry(){},role:(data,replaying)=>roles.push({control:data.control,replaying})});
   sharing.message({type:'replay_start',cols:40,rows:24});sharing.message({type:'replay_end',seq:0});sharing.message({type:'sharing',control:true});
-  return {term,serializer,sharing,sent,roles};
+  return {term,serializer,sharing,sent,roles,get filter(){return filter;}};
 }
 const source=client();await flush(source.term);
 const output='\x1b[?1049h\x1b[2J\x1b[H'+Array.from({length:700},(_,i)=>'\x1b[32m第 '+i+' 行 │ 中文 café é 🙂\x1b[0m\r\n').join('');
@@ -52,7 +52,7 @@ source.term.dispose();viewer.term.dispose();
 // upper scroll region. Replaying margins must not move it to the first row.
 const controller=client(),reader=client();
 await flush(controller.term);
-controller.sharing.output(frame('\x1b[1;4r甲\r\n乙\r\n丙\r\n丁\x1b[24;1H固定输入区\x1b[4;8H',1));
+controller.sharing.output(frame('\x1b[?1000;1006h\x1b[1;4r甲\r\n乙\r\n丙\r\n丁\x1b[24;1H固定输入区\x1b[4;8H',1));
 controller.sharing.message({type:'snapshot_request',nonce:'margin',seq:1,cols:40,rows:24});
 await flush(controller.term);
 const marginSnapshot=controller.sent.find(message=>message.nonce==='margin');
@@ -62,6 +62,8 @@ reader.sharing.output(frame(marginSnapshot.text,1,true));
 await flush(reader.term);
 assert.equal(reader.term.buffer.active.cursorX,7);
 assert.equal(reader.term.buffer.active.cursorY,3);
+assert.equal(reader.filter.wheel(true,3,3,20,20),'\x1b[<64;3;3M');
+assert.equal(reader.term.modes.mouseTrackingMode,'none');
 for(const client of [controller,reader]){
   client.sharing.output(frame('\r\n新回复',2));
   await flush(client.term);

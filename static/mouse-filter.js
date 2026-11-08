@@ -2,9 +2,11 @@
 (function(root){
   'use strict';
   const mouseModes=new Set([9,1000,1001,1002,1003,1005,1006,1015,1016]);
+  const trackingModes=new Set([9,1000,1002,1003]);
+  const encodingModes=new Set([1005,1006,1015,1016]);
   const alternateModes=new Set([47,1047,1049]);
   class TerminalMouseFilter{
-    constructor(remote=false,{keepScrollback=false}={}){this.remote=remote;this.keepScrollback=keepScrollback;this.sequence='';this.state='text';this.requested=new Map();}
+    constructor(remote=false,{keepScrollback=false}={}){this.remote=remote;this.keepScrollback=keepScrollback;this.sequence='';this.state='text';this.tracking=0;this.encoding=0;}
     feed(text){
       let out='';
       for(const char of text){
@@ -23,7 +25,7 @@
         this.sequence+=char;
         if(this.state==='escape'){
           if(char==='[')this.state='csi';
-          else{out+=this.sequence;this.sequence='';this.state=']PX^_'.includes(char)?'string':'text';}
+          else{if(char==='c')this.tracking=this.encoding=0;out+=this.sequence;this.sequence='';this.state=']PX^_'.includes(char)?'string':'text';}
           continue;
         }
         const code=char.charCodeAt(0);
@@ -31,7 +33,11 @@
           const match=this.sequence.match(/^\x1b\[\?([0-9;]+)([hl])$/);
           if(match){
             const values=match[1].split(';').map(Number);
-            for(const mode of values)if(mouseModes.has(mode))this.requested.set(mode,match[2]==='h');
+            const enabled=match[2]==='h';
+            for(const mode of values){
+              if(trackingModes.has(mode))this.tracking=enabled?mode:0;
+              if(encodingModes.has(mode))this.encoding=enabled?mode:0;
+            }
             // screen owns the remote application's alternate buffer. Its outer
             // display must stay in xterm's normal buffer so local scrolling works.
             const kept=values.filter(mode=>(this.remote||!mouseModes.has(mode))&&!(this.keepScrollback&&alternateModes.has(mode)));
@@ -44,9 +50,23 @@
     }
     setRemote(enabled){
       this.remote=enabled;
-      let out='\x1b[?9;1000;1001;1002;1003;1005;1006;1015;1016l';
-      if(enabled)for(const [mode,on] of this.requested)if(on)out+='\x1b[?'+mode+'h';
-      return out;
+      return '\x1b[?9;1000;1001;1002;1003;1005;1006;1015;1016l'+(enabled?this.snapshotModes():'');
+    }
+    snapshotModes(){
+      const modes=[this.tracking,this.encoding].filter(Boolean);
+      return modes.length?'\x1b[?'+modes.join(';')+'h':'';
+    }
+    acceptsWheel(){return this.tracking!==0&&this.tracking!==9;}
+    wheel(up,column,row,pixelX,pixelY){
+      if(!this.acceptsWheel())return '';
+      const button=up?64:65;
+      if(this.encoding===1016)return '\x1b[<'+button+';'+pixelX+';'+pixelY+'M';
+      if(this.encoding===1006)return '\x1b[<'+button+';'+column+';'+row+'M';
+      if(this.encoding===1015)return '\x1b['+(button+32)+';'+column+';'+row+'M';
+      // The legacy protocol is byte-based. Keep the coordinate bytes ASCII
+      // on our UTF-8 input path. Modern SGR reports use the full coordinates.
+      const limit=this.encoding===1005?2015:95;
+      return '\x1b[M'+String.fromCharCode(button+32,Math.min(column,limit)+32,Math.min(row,limit)+32);
     }
     input(text){
       if(this.remote)return text;

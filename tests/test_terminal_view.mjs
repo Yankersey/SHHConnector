@@ -26,11 +26,11 @@ assert.ok(view.history(terminal([line('新连接')]),many.map((_,i)=>'旧记录 
 const bounded=view.history(terminal([line('🙂'+'中'.repeat(2097151))]));
 assert.equal(bounded,'中'.repeat(2097151));
 
-let wheel,removed=false,disposed=false,history=0,live=0,changes=0,remoteMouse=false,historyOpen=false,archived=false,canPan=true;
+let wheel,removed=false,disposed=false,history=0,live=0,changes=0,remoteMouse=false,historyOpen=false,archived=false,canPan=true,program=false,forwarded=0;
 const calls=[];
 const term={rows:20,buffer:{active:{type:'normal',baseY:300,viewportY:290}},_core:{_bufferService:{scrollLines:n=>calls.push(['lines',n])}},onScroll:()=>({dispose:()=>{disposed=true;}})};
 const element={addEventListener:(name,listener,options)=>{assert.equal(name,'wheel');assert.equal(options.capture,true);assert.equal(options.passive,false);wheel=listener;},removeEventListener:()=>{removed=true;}};
-const controller=view.installScroll(term,element,{remoteMouse:()=>remoteMouse,historyOpen:()=>historyOpen,hasArchive:()=>archived,nativePan:()=>canPan,lineHeight:()=>20,openHistory:()=>{history++;},changed:()=>{changes++;},live:()=>{live++;}});
+const controller=view.installScroll(term,element,{programWheel:()=>{if(program)forwarded++;return program;},remoteMouse:()=>remoteMouse,historyOpen:()=>historyOpen,hasArchive:()=>archived,nativePan:()=>canPan,lineHeight:()=>20,openHistory:()=>{history++;},changed:()=>{changes++;},live:()=>{live++;}});
 function event(values={}){return {deltaY:0,deltaMode:0,type:'keydown',shiftKey:false,ctrlKey:false,metaKey:false,altKey:false,preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;},...values};}
 let e=event({deltaY:-80});wheel(e);assert.deepEqual(calls.pop(),['lines',-4]);assert.ok(e.prevented&&e.stopped);
 wheel(event({deltaY:60}));assert.deepEqual(calls.pop(),['lines',3]);
@@ -54,6 +54,9 @@ term.buffer.active.viewportY=0;term.buffer.active.baseY=0;
 e=event({deltaY:-60});wheel(e);assert.ok(e.stopped&&!e.prevented); // no local history yet
 archived=true;
 e=event({deltaY:-60});wheel(e);assert.equal(history,3);assert.ok(e.prevented);
+program=true;
+e=event({deltaY:-60});wheel(e);assert.equal(forwarded,1);assert.equal(history,3);assert.ok(e.prevented);
+wheel(event({deltaY:-60,shiftKey:true}));assert.equal(forwarded,1);assert.equal(history,4);
 controller.dispose();assert.ok(removed&&disposed);
 
 // Use the shipped renderer as well as mocks: screen enters an alternate
@@ -63,6 +66,22 @@ context.self=context;context.window=context;
 vm.runInContext(fs.readFileSync(new URL('../static/vendor/xterm.js',import.meta.url),'utf8'),context);
 vm.runInContext(fs.readFileSync(new URL('../static/vendor/addon-unicode11.js',import.meta.url),'utf8'),context);
 vm.runInContext(fs.readFileSync(new URL('../static/mouse-filter.js',import.meta.url),'utf8'),context);
+const wheelFilter=new context.TerminalMouseFilter(false);
+const delivered=[];
+let canSend=false;
+const wheelToProgram=view.programWheel({rows:20,cols:40},{getBoundingClientRect:()=>({left:10,top:20,width:400,height:400})},{
+  filter:()=>wheelFilter,canSend:()=>canSend,send:data=>delivered.push(data)
+});
+const gesture={clientX:32,clientY:65,deltaY:-10,deltaMode:0};
+wheelFilter.feed('\x1b[?1000;1006h');
+assert.equal(wheelToProgram(gesture),false); // read-only pages cannot send input
+canSend=true;
+assert.equal(wheelToProgram(gesture),true);
+assert.equal(delivered.length,0); // accumulate small trackpad deltas
+assert.equal(wheelToProgram(gesture),true);
+assert.deepEqual(delivered,['\x1b[<64;3;3M']);
+wheelFilter.feed('\x1b[?1000l');
+assert.equal(wheelToProgram(gesture),false);
 const actual=new context.Terminal({cols:80,rows:24,scrollback:20000,allowProposedApi:true});
 actual.loadAddon(new context.Unicode11Addon.Unicode11Addon());
 actual.unicode.activeVersion='11';

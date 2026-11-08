@@ -290,14 +290,19 @@ async function openSession(record, shouldConnect) {
     win.inputGate=ScreenDeskMobile.bindInput(input,()=>mobile.render(currentWindows(),selectedWindow));
     win.inputGate.refresh(false,mobile.manualInput());
     control.onclick=()=>send(win,{type:'control',release:win.canControl});
-    win.scroller=TerminalView.installScroll(term,content,{nativePan:event=>{
+    const programWheel=TerminalView.programWheel(term,$('.xterm-screen',content),{
+      filter:()=>win.mouseFilter,
+      canSend:()=>win.canControl&&win.ws?.readyState===WebSocket.OPEN,
+      send:data=>send(win,{type:'input',data})
+    });
+    win.scroller=TerminalView.installScroll(term,content,{programWheel,nativePan:event=>{
       if(win.canControl||win.ws?.readyState!==WebSocket.OPEN)return false;
       return event.deltaY<0?content.scrollTop>0:content.scrollTop+content.clientHeight<content.scrollHeight-1;
     },remoteMouse:()=>win.canControl&&win.remoteMouse,historyOpen:()=>!historyView.hidden,hasArchive:()=>!!win.historyArchive,lineHeight:()=>$('.xterm-screen',content).offsetHeight/(term.rows||24),openHistory:()=>openHistory(win,false,true),changed:()=>updateScrollState(win),live:()=>returnLive(win)});
     review.onclick=()=>openHistory(win);
     live.onclick=()=>returnLive(win);historyClose.onclick=()=>returnLive(win);historyRefresh.onclick=()=>openHistory(win,true);
     historyView.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();returnLive(win);}});
-    function updateMouse(){mouse.textContent=win.remoteMouse?'鼠标:远程':'鼠标:本地';mouse.title=win.remoteMouse?'鼠标坐标会发送到远程，点击关闭上报':'已拦截鼠标坐标上报；点击允许远程使用鼠标';}
+    function updateMouse(){mouse.textContent=win.remoteMouse?'鼠标:远程':'鼠标:本地';mouse.title=win.remoteMouse?'鼠标坐标会发送到远程；Shift+滚轮回看本地历史':'移动和点击留在本地；程序支持时滚轮在程序内滚动，Shift+滚轮回看本地历史。点击可开启远程鼠标。';}
     updateMouse();mouse.onclick=()=>{win.remoteMouse=!win.remoteMouse;localStorage.setItem('sd-remote-mouse:'+record.id,win.remoteMouse?'1':'0');term.write(win.mouseFilter.setRemote(win.remoteMouse));updateMouse();};
     forwarding.onchange=()=>changeForwarding(win,forwarding.value==='1');
     diagnose.onclick=async()=>{showDialog($('#diagnostic-dialog'));$('#diagnostic-output').textContent='正在检查当前会话…';try{const result=await api('/api/sessions/'+record.id+'/diagnose',{});$('#diagnostic-output').textContent=result.output||'服务器没有返回诊断输出';}catch(error){$('#diagnostic-output').textContent=error.message;}};

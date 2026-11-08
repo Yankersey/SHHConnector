@@ -1,4 +1,4 @@
-/* Terminal colors and local scrolling. No SSH input is generated here. */
+/* Terminal colors, local history and wheel routing. */
 (function(root){
   'use strict';
   const palettes={
@@ -76,6 +76,27 @@
     // when the DOM viewport is being resized or the terminal is read-only.
     term._core._bufferService.scrollLines(lines);
   }
+  function programWheel(term,screen,options){
+    let remainder=0;
+    return event=>{
+      const filter=options.filter();
+      if(!options.canSend()||!filter.acceptsWheel()){remainder=0;return false;}
+      const {left,top,width,height}=screen.getBoundingClientRect();
+      const x=event.clientX-left,y=event.clientY-top;
+      if(x<0||y<0||x>=width||y>=height)return false;
+      const cellHeight=height/term.rows;
+      const delta=event.deltaMode===1?event.deltaY:event.deltaMode===2?event.deltaY*term.rows:event.deltaY/cellHeight;
+      remainder+=delta;
+      const steps=Math.trunc(remainder);
+      remainder-=steps;
+      if(steps){
+        const column=Math.floor(x*term.cols/width)+1,row=Math.floor(y*term.rows/height)+1;
+        const report=filter.wheel(steps<0,column,row,Math.floor(x)+1,Math.floor(y)+1);
+        options.send(report.repeat(Math.min(6,Math.abs(steps))));
+      }
+      return true;
+    };
+  }
   function installScroll(term,element,options){
     let remainder=0;
     const needsReview=()=>term.buffer.active.type==='alternate'||
@@ -83,9 +104,10 @@
     const stop=event=>{event.preventDefault();event.stopPropagation();};
     const wheel=event=>{
       if(options.historyOpen()||event.ctrlKey||!event.deltaY)return;
+      const {baseY,viewportY}=term.buffer.active;
+      if(!event.shiftKey&&viewportY===baseY&&options.programWheel?.(event)){stop(event);return;}
       // Remote mouse is an explicit per-window opt-in. Shift always allows local review.
       if(options.remoteMouse()&&!event.shiftKey)return;
-      const {baseY,viewportY}=term.buffer.active;
       const canReview=event.deltaY<0&&needsReview();
       const canScroll=event.deltaY<0?viewportY>0:viewportY<baseY;
       if(!canReview&&!canScroll&&options.nativePan?.(event)&&!event.shiftKey){event.stopPropagation();return;}
@@ -116,5 +138,5 @@
     const subscription=term.onScroll(options.changed);
     return {key,dispose(){element.removeEventListener('wheel',wheel,true);subscription.dispose();}};
   }
-  root.TerminalView={resolveTheme,palette,installScreenHistory,history,installScroll,scrollLocal};
+  root.TerminalView={resolveTheme,palette,installScreenHistory,history,installScroll,scrollLocal,programWheel};
 })(typeof window==='undefined'?globalThis:window);
