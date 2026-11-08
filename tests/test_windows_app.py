@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -103,6 +104,34 @@ class DesktopTests(unittest.TestCase):
             reopened = desktop_lock(data_dir)
             self.assertIsNotNone(reopened)
             reopened.close()
+
+    @unittest.skipUnless(os.name == "nt", "Windows GUI executable")
+    def test_backend_survives_the_windowed_executable_exiting(self):
+        from install_windows_app import build_launcher
+        with tempfile.TemporaryDirectory(prefix="sd desktop lifetime ") as folder:
+            root = Path(folder)
+            (root / "empty-config").write_text("", encoding="utf-8")
+            (root / "windows_app.py").write_text(
+                "from pathlib import Path\nimport runpy,sys\nsys.path.insert(0,%r)\ndef main():\n"
+                "    implementation=runpy.run_path(%r)\n"
+                "    root=Path(__file__).parent\n"
+                "    backend=implementation['Backend'](%r,root/'data',"
+                "['--offline','--ssh-config',str(root/'empty-config')])\n"
+                "    backend.connect(timeout=15)\n    return 0\n" %
+                (str(ROOT), str(ROOT / "windows_app.py"), str(ROOT)), encoding="utf-8")
+            executable = build_launcher(root)
+            backend = Backend(ROOT, root / "data", [])
+            try:
+                subprocess.run([str(executable)], cwd=root, check=True, timeout=25)
+                time.sleep(.3)
+                self.assertIsNotNone(backend.running_url(), "Closing the desktop executable killed the backend")
+            finally:
+                url = backend.running_url()
+                if url:
+                    local_request(url, "/api/shutdown", data=b"{}")
+                    deadline = time.monotonic() + 10
+                    while (root / "data" / "running.json").exists() and time.monotonic() < deadline:
+                        time.sleep(.05)
 
     @unittest.skipUnless(os.name == "nt", "Windows GUI executable")
     def test_windowed_executable_with_spaces_unicode_and_idempotent_install(self):

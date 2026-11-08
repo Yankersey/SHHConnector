@@ -308,7 +308,7 @@ class Workspace:
         with self.lock:
             shared = {}
             for identifier, terminal in self.terminals.items():
-                if not terminal.stopped and isinstance(terminal.ws, SharedTerminal) and not terminal.ws.closed:
+                if not terminal.stopped and isinstance(getattr(terminal, "ws", None), SharedTerminal) and not terminal.ws.closed:
                     shared[identifier] = dict(connection_id=terminal.connection_id,
                                               forwarding=bool(terminal.record.get("forwarding")))
             return json.loads(json.dumps(dict(profiles=self.profiles, sessions=[r for r in self.records if r["state"] != "ended"],
