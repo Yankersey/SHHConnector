@@ -90,7 +90,7 @@ const visible=term=>Array.from({length:term.rows},(_,row)=>{
 for(const command of ['\x1b[1;4r\x1b[1;5H\x1b[2M','\x1b[1;4r\x1b[8;5H\x1b[2S']){
   const fixed=new context.Terminal({cols:40,rows:8,scrollback:20});
   const baseline=new context.Terminal({cols:40,rows:8,scrollback:20});
-  view.preserveTopScroll(fixed);
+  view.installScreenHistory(fixed);
   fixed.reset(); // A reconnect resets the renderer without removing the fix.
   const initial='\x1b[32m较早的回复 🙂\x1b[0m\r\n旧回复 B\r\n旧回复 C\r\n旧回复 D\x1b[8;1Hcomposer';
   for(const term of [fixed,baseline]){
@@ -118,4 +118,25 @@ for(const command of ['\x1b[1;4r\x1b[1;5H\x1b[2M','\x1b[1;4r\x1b[8;5H\x1b[2S']){
   fixed.dispose();
   baseline.dispose();
 }
+
+// Screen sends a top-row DL for some full redraws. Repainting the same
+// lines should leave one copy of the transcript and no old composer.
+const redraw=new context.Terminal({cols:40,rows:8,scrollback:20});
+view.installScreenHistory(redraw);
+const frame='提问\r\n运行中的状态栏\r\n旧回复\x1b[8;1Hcomposer';
+await write(redraw,frame+'\x1b[H\x1b[3M'+frame);
+assert.equal(redraw.buffer.normal.baseY,0);
+assert.equal(view.history(redraw).match(/运行中的状态栏/g).length,1);
+redraw.reset();
+
+const commit='\x1b[1;4r第一条回复\r\n第二条回复\r\n第三条回复\r\n第四条回复\r\n第五条回复\r\n第六条回复\x1b[r';
+await write(redraw,commit);
+assert.equal(redraw.buffer.normal.baseY,2);
+await write(redraw,'\x1b[H\x1b[2J临时画面\x1b[H\x1b[2J');
+assert.equal(redraw.buffer.normal.baseY,2); // ordinary redraws retain history
+await write(redraw,'\x1b[H\x1b[2J'); // Screen's ED 3 is another empty ED 2
+assert.equal(redraw.buffer.normal.baseY,0);
+await write(redraw,commit);
+assert.equal(view.history(redraw).match(/第一条回复/g).length,1);
+redraw.dispose();
 console.log('PASS terminal Unicode history, theme and scroll interactions');

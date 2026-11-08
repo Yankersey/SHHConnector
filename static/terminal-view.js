@@ -7,15 +7,18 @@
   };
   function resolveTheme(preference,systemDark){return preference==='light'||preference==='dark'?preference:systemDark?'dark':'light';}
   function palette(theme){return {...palettes[theme==='dark'?'dark':'light']};}
-  function preserveTopScroll(term){
-    // GNU screen can render Codex's upper-region scroll as DL (CSI M).
-    // The bundled xterm 5.5 drops those rows and SU (CSI S) rows. Use the
-    // same buffer scroll as a line feed to retain the actual styled cells.
+  function installScreenHistory(term){
     const {_bufferService:bufferService,_inputHandler:input}=term._core;
+    let inlineBuffer,previousClear;
+    const upperRegion=buffer=>buffer.scrollTop===0&&buffer.scrollBottom<term.rows-1;
     function scroll(params,deleting){
       const buffer=bufferService.buffer;
       if(!buffer.hasScrollback||buffer.scrollTop!==0||(deleting&&buffer.y!==0))return false;
       const count=Math.min(params[0]||1,buffer.scrollBottom+1);
+      // Screen uses DL for multi-row scrolling inside the upper region.
+      // A full-screen DL can be a redraw and must not become history.
+      if(deleting&&(!upperRegion(buffer)||count>buffer.scrollBottom))return false;
+      if(upperRegion(buffer))inlineBuffer=buffer;
       const erase=input._eraseAttrData();
       for(let i=0;i<count;i++)bufferService.scroll(erase);
       if(deleting)buffer.x=0;
@@ -24,6 +27,32 @@
     }
     term.parser.registerCsiHandler({final:'M'},params=>scroll(params,true));
     term.parser.registerCsiHandler({final:'S'},params=>scroll(params,false));
+    term.onLineFeed(()=>{
+      const buffer=bufferService.buffer;
+      if(buffer.hasScrollback&&upperRegion(buffer)&&buffer.y===buffer.scrollBottom)inlineBuffer=buffer;
+    });
+    term.parser.registerCsiHandler({final:'J'},([mode])=>{
+      const buffer=bufferService.buffer;
+      const first=previousClear;
+      previousClear=null;
+      if(mode===3)inlineBuffer=null;
+      if(mode!==2||buffer!==inlineBuffer||buffer.y!==0||buffer.x!==0||!buffer.ybase)return false;
+      // Screen translates an inline TUI's ED 2 + ED 3 into two full clears.
+      // Only an empty second clear of the same frame indicates a rebuild.
+      if(first?.buffer===buffer&&first.base===buffer.ybase){
+        let blank=true;
+        for(let row=0;row<term.rows&&blank;row++){
+          blank=!buffer.lines.get(buffer.ybase+row)?.translateToString(true);
+        }
+        if(blank){
+          input.eraseInDisplay({params:[3]});
+          inlineBuffer=null;
+          return false;
+        }
+      }
+      previousClear={buffer,base:buffer.ybase};
+      return false;
+    });
   }
   function history(term,archive=''){
     const buffer=term.buffer.normal,lines=[];
@@ -78,5 +107,5 @@
     const subscription=term.onScroll(options.changed);
     return {key,dispose(){element.removeEventListener('wheel',wheel,true);subscription.dispose();}};
   }
-  root.TerminalView={resolveTheme,palette,preserveTopScroll,history,installScroll};
+  root.TerminalView={resolveTheme,palette,installScreenHistory,history,installScroll};
 })(typeof window==='undefined'?globalThis:window);

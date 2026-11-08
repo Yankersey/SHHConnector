@@ -274,7 +274,7 @@ async function openSession(record, shouldConnect) {
     const roleLabel=el('span','sharing-role','未连接'),control=el('button','window-control','接管操作');control.disabled=true;
     footer.append(dot,stateLabel,reconnect,roleLabel,control,review,live,refLabel);element.append(header,content,footer);$('#canvas').append(element);
     const term=new Terminal({fontFamily:'Menlo, Monaco, "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:record.layout?.fontSize || 13,lineHeight:1.18,cursorBlink:true,scrollback:20000,convertEol:false,minimumContrastRatio:4.5,theme:TerminalView.palette(currentTheme())});
-    TerminalView.preserveTopScroll(term);
+    TerminalView.installScreenHistory(term);
     const addon=new FitAddon.FitAddon(),serializer=new SerializeAddon.SerializeAddon();term.loadAddon(addon);term.loadAddon(serializer);term.open(content);term.options.disableStdin=true;
     const input=term.textarea;
     input.setAttribute('autocapitalize','none');input.setAttribute('autocorrect','off');input.spellcheck=false;
