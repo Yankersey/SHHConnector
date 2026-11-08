@@ -38,6 +38,11 @@ from shared_terminal import SharedTerminal
 ROOT = Path(__file__).resolve().parent
 SSH = system_ssh()
 MAX_FRAME = 1024 * 1024
+# Detached screen initializes its default Km binding before a display exists.
+# On modern terminfo this can later rewrite SGR's ESC[< prefix to ESC[M while
+# leaving the decimal coordinates intact. Let its mouse parser pass the native
+# reports through, without applying a key-prefix translation afterward.
+SCREEN_MOUSE_PASSTHROUGH = ("bindkey", "-d", "-k", "Km")
 
 
 class UserError(Exception):
@@ -135,6 +140,7 @@ sd_run screen -S "$ref" -X autodetach on || exit $?
 sd_run screen -S "$ref" -X defnonblock 1 || exit $?
 sd_run screen -S "$ref" -X defscrollback 20000 || exit $?
 sd_run screen -S "$ref" -X scrollback 20000 || exit $?
+sd_run screen -S "$ref" -X %s || exit $?
 printf '%s' "$ref"
 stty -ixon -ixoff 2>/dev/null || :
 trap 'exit 129' HUP
@@ -153,7 +159,7 @@ while :; do
   printf '\\nScreenDesk: socket 尚未完成分离，1 秒后重试附加（不会新建会话）…\\n' >&2
   sleep 1
 done
-""" % (target, setup, ready_format)
+""" % (target, setup, shlex.join(SCREEN_MOUSE_PASSTHROUGH), ready_format)
 
 
 def remote_deadline_shell():

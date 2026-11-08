@@ -178,6 +178,8 @@ SSH 仍使用电脑上的配置和密钥，端口转发也发生在电脑上。�
 
 终端根据远程程序启用的鼠标模式工作。普通 shell 收到键盘输入，滚轮回看本地历史；交互程序启用鼠标后，xterm 负责生成相应的鼠标事件。文字输入保留 UTF-8，旧版鼠标协议使用独立的字节输入通道，避免坐标被截短或重新编码。无需切换鼠标开关。
 
+连接时还会清除 screen 默认的 `Km` 前缀改写：后台创建的 screen 在部分现代 terminfo 配置下会把 SGR 鼠标前缀改成旧版格式，使坐标数字落入应用的输入栏。这里只去掉这条默认按键改写，鼠标模式仍由应用协商。已有会话重新附加时也会应用修正。
+
 Windows 的 ConPTY 输入接口使用 Unicode。SGR 鼠标事件通过文本通道正常传递；旧版 X10 鼠标事件的坐标字节若超出 ASCII 范围，程序会给出提示并保留键盘连接。Mac 和 Linux 的 PTY 可原样传递这些字节。
 
 ## screen / socket 卡住的处理
@@ -203,6 +205,8 @@ SCREENDESK_TEST_SCREEN=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover 
 认证集成测试先安装 `python3 -m pip install -r requirements-test.txt`。测试使用真实系统 OpenSSH 与临时回环 SSH/SFTP 服务，验证无公钥的密码 + MFA、文件二进制传输、取消、错误密码和主机指纹变更拒绝；Paramiko 仅用于测试服务器，不是程序运行依赖。
 
 另可运行 `node tests/test_mouse.mjs` 验证鼠标模式过滤，包括跨数据块的控制序列、混合终端模式和远程鼠标主动开启。Node 仅用于这项开发测试，日常运行不需要它。
+
+`node tests/test_terminal_input.mjs` 使用捆绑的 xterm 原生编码器验证文字、方向键、Shift+方向键、点击和滚轮。启用上述 screen 集成测试时，还会通过正式连接脚本将这些输入送入隔离 screen 内的真实 curses 编辑器，逐字节核对应用收到的数据，并检查滚动、点击不会污染输入到一半的中文草稿；不连接真实 SSH 服务器。
 
 ## 开源组件
 

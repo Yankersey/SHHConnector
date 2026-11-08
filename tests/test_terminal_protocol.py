@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import unittest
 
 import local_runtime
+from app import remote_script
 from shared_terminal import SharedTerminal
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +114,7 @@ class TerminalProtocolTests(unittest.TestCase):
             terminfo.mkdir()
             source = root/"input.terminfo"
             source.write_text(
+                "sd-outer|ScreenDesk modern outer terminal fixture,\n\tkmous=\\E[<,\n\tuse=xterm-256color,\n"
                 "sd-legacy|ScreenDesk legacy input fixture,\n\tkmous=\\E[M,\n\tXM@,\n\tuse=xterm-256color,\n"
                 "sd-sgr|ScreenDesk SGR input fixture,\n\tkmous=\\E[<,\n"
                 "\tXM=\\E[?1006;1000%?%p1%{1}%=%th%el%;,\n\tuse=xterm-256color,\n")
@@ -126,14 +128,20 @@ class TerminalProtocolTests(unittest.TestCase):
                     case.mkdir(mode=0o700)
                     (case/"screenrc").write_text("startup_message off\naltscreen on\n")
                     (case/"editor.py").write_text(EDITOR)
-                    env = dict(environment, SCREENDIR=str(case))
+                    env = dict(environment, SCREENDIR=str(case), TERM="sd-outer")
                     name = "input-fixture"
                     transport = None
                     try:
                         subprocess.run([screen, "-c", str(case/"screenrc"), "-U", "-dmS", name,
                                         sys.executable, str(case/"editor.py"), str(case), encoding],
                                        env=env, check=True, capture_output=True, timeout=5)
-                        transport = local_runtime.open_terminal([screen, "-U", "-r", name], 160, 30, env)
+                        # The production attach script invokes screen by name.
+                        screen_bin = case/"bin"
+                        screen_bin.mkdir()
+                        (screen_bin/"screen").symlink_to(screen)
+                        env["PATH"] = str(screen_bin)+os.pathsep+env.get("PATH",os.defpath)
+                        attach = remote_script(dict(screen_ref=name),False,"input-fixture")
+                        transport = local_runtime.open_terminal(["/bin/sh","-c",attach],160,30,env)
                         hub = SharedTerminal(160,30)
                         hub.terminal = SimpleNamespace(write=transport.write)
                         hub.allows = lambda identifier: identifier == "controller"

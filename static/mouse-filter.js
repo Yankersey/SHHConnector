@@ -1,4 +1,4 @@
-/* Keep mouse reporting local unless a window explicitly opts in. No dependencies. */
+/* Track negotiated mouse modes across output chunks. No dependencies. */
 (function(root){
   'use strict';
   const mouseModes=new Set([9,1000,1001,1002,1003,1005,1006,1015,1016]);
