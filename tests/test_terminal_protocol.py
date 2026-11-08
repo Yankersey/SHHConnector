@@ -17,11 +17,37 @@ from shared_terminal import SharedTerminal
 ROOT = Path(__file__).resolve().parents[1]
 
 EDITOR = r'''
-import curses, json, os, sys
+import curses, fcntl, json, os, pty, select, signal, sys, termios, tty
 from pathlib import Path
 root = Path(sys.argv[1])
 os.environ['TERM'] = 'sd-' + sys.argv[2]
 os.environ.pop('TERMCAP',None)
+if '--child' not in sys.argv:
+    tty.setraw(0)
+    pid, master = pty.fork()
+    if pid == 0:
+        os.execv(sys.executable,[sys.executable,*sys.argv,'--child'])
+    def resize(*args):
+        fcntl.ioctl(master,termios.TIOCSWINSZ,fcntl.ioctl(0,termios.TIOCGWINSZ,b'\0'*8))
+    resize()
+    signal.signal(signal.SIGWINCH,resize)
+    while True:
+        ready,_,_ = select.select([0,master],[],[],1)
+        for fd in ready:
+            try:
+                data = os.read(fd,4096)
+            except OSError:
+                data = b''
+            if not data:
+                os.close(master)
+                os.waitpid(pid,0)
+                sys.exit(0)
+            if fd == 0:
+                with (root/'wire.bin').open('ab') as wire:
+                    wire.write(data)
+                os.write(master,data)
+            else:
+                os.write(1,data)
 def run(screen):
     curses.raw()
     screen.keypad(True)
@@ -141,8 +167,13 @@ class TerminalProtocolTests(unittest.TestCase):
                         while not result.exists() and time.monotonic()<deadline:
                             output += transport.read(.1) or b""
                         self.assertTrue(result.exists(), encoding+" input parser did not finish "+repr(output[-2000:]))
+                        expected_wire = b"".join(message["data"].encode("latin-1" if message.get("binary") else "utf-8")
+                                                 for message in messages)
+                        self.assertEqual((case/"wire.bin").read_bytes(), expected_wire,
+                                         "screen changed the native xterm input bytes")
                         self.assertEqual(json.loads(result.read_text()),
-                                         dict(draft="aZ中文c",wheels=1,clicks=1))
+                                         dict(draft="aZ中文c",wheels=1,clicks=1),
+                                         repr((case/"wire.bin").read_bytes()))
                     finally:
                         if transport:
                             transport.close()
