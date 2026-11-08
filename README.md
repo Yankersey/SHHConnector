@@ -12,7 +12,7 @@ macOS 解压整个文件夹后，双击 **启动 ScreenDesk.command**。浏览�
 sh start.sh
 ```
 
-macOS 12 或更新版本也可在项目目录运行 `sh install-macos-app.sh`，再从 Finder 的个人「应用程序」文件夹打开 **ScreenDesk.app**。它有独立的窗口和程序坞图标。安装器使用 Apple 命令行工具编译，按提示运行 `xcode-select --install` 即可安装工具。如果 macOS 询问是否允许访问项目所在的「文稿」文件夹，选择允许。
+macOS 12.3 或更新版本也可在项目目录运行 `sh install-macos-app.sh`，再从 Finder 的个人「应用程序」文件夹打开 **ScreenDesk.app**。它有独立的窗口和程序坞图标。安装器使用 Apple 命令行工具编译，按提示运行 `xcode-select --install` 即可安装工具。如果 macOS 询问是否允许访问项目所在的「文稿」文件夹，选择允许。
 
 关闭应用窗口时后台继续运行，点击程序坞图标可重新打开工作台。使用 ⌘Q 退出时，应用自己启动的后台会分离终端并退出。如果打开应用前已经有后台在运行，应用会复用它，可用工作台里的「退出程序」关闭该后台。下次打开时会检查 Git 更新。
 
@@ -168,7 +168,7 @@ SSH 仍使用电脑上的配置和密钥，端口转发也发生在电脑上。�
 
 - 在终端窗口内使用鼠标滚轮 / 触控板上下滚动；`Shift+PageUp / PageDown` 翻页，`Shift+Home` 到顶部，`Shift+End` 或窗口底部“回到底部”返回实时输出。滚轮事件留在这个窗口，不带动整个工作台。
 - 上下滚动直接回看终端已收到的输出，保留中文、框线和颜色。screen 的外层显示留在本地普通缓冲区，不占用无历史的备用缓冲区；远程全屏程序仍由 screen 管理。滚动不会请求服务器，也不会向远程程序输入翻页键。
-- Codex 等程序把旧回复从顶部区域滚走时，移出的行会进入本地滚动历史。可以上滚或用「回看」查看。整屏删行重画沿用终端默认行为，Codex 重建历史时会替换旧画面，避免把旧状态栏和输入内容重复留在历史里。
+- Codex 等程序把旧回复从顶部区域滚走时，移出的行会进入本地滚动历史。可以上滚或用「回看」查看。清屏按终端组件原有规则处理。拖动窗口边缘时，松开后才更新远程终端尺寸，减少输出期间的重复重绘。
 - 点底部“回看”打开可选择、复制的本地文字快照，点“返回终端”或按 Esc 回去。同一窗口掉线后重新连接，之前收到的内容仍可在这里查看；关闭窗口、刷新网页或退出程序后清除。本地快照最多保留最近 20,000 行 / 2,097,152 个 UTF-16 单元，不落盘。
 - 服务器上重新连接前的更早历史，可在终端按 `Ctrl+A`，再按 `[` 进入 screen 原生回看，用方向键 / PageUp 翻页，按 Esc 返回。旧版 screen 的 `hardcopy` 会破坏中文等字符，程序已移除这条导出路径。screen 没有保留下来的旧输出无法补回。
 - Codex / vim 等全屏程序自己的内部历史由程序管理。若要让它直接接收滚轮，可为该窗口开启“鼠标:远程”；按住 Shift 滚动仍可回看本地输出。
@@ -206,6 +206,6 @@ SCREENDESK_TEST_SCREEN=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover 
 
 ## 开源组件
 
-xterm.js 5.5.0、@xterm/addon-fit 0.10.0，MIT 许可证保留在 static/vendor/。
+xterm.js 6.1.0-beta.304，使用与 VS Code 同代的终端组件和 Unicode 11、Serialize 扩展。扩展版本为 @xterm/addon-fit 0.12.0-beta.301、@xterm/addon-serialize 0.15.0-beta.301、@xterm/addon-unicode11 0.10.0-beta.301。MIT 许可证保留在 static/vendor/。
 
 参考：[GNU screen 手册](https://www.gnu.org/software/screen/manual/screen.html)、[OpenSSH 配置说明](https://man.openbsd.org/ssh_config)、[xterm.js 安全说明](https://xtermjs.org/docs/guides/security/)。

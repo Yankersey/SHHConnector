@@ -216,7 +216,7 @@ function saveLayout(win) {
   win.saveTimer=setTimeout(()=>api('/api/sessions/'+win.record.id+'/layout',layout).catch(error=>{if(!shuttingDown)toast('布局保存失败：'+error.message,true);}),250);
 }
 function fit(win) {
-  if(!win.element.isConnected||win.element.hidden||win.record.profile_id!==selectedProfile) return;
+  if(win.dragging||!win.element.isConnected||win.element.hidden||win.record.profile_id!==selectedProfile) return;
   if(mobile?.isMobile()&&!win.element.classList.contains('mobile-active'))return;
   if(win.ws&&win.ws.readyState<2&&!win.canControl){sizeReader(win);return;}
   win.term.element.style.width='';win.term.element.style.height='';
@@ -273,8 +273,9 @@ async function openSession(record, shouldConnect) {
     const review=el('button','window-review','回看'),live=el('button','window-live','回到底部');review.title='回看本窗口已收到的内容；滚轮 / Shift+PageUp 翻页';live.hidden=true;
     const roleLabel=el('span','sharing-role','未连接'),control=el('button','window-control','接管操作');control.disabled=true;
     footer.append(dot,stateLabel,reconnect,roleLabel,control,review,live,refLabel);element.append(header,content,footer);$('#canvas').append(element);
-    const term=new Terminal({fontFamily:'Menlo, Monaco, "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:record.layout?.fontSize || 13,lineHeight:1.18,cursorBlink:true,scrollback:20000,convertEol:false,minimumContrastRatio:4.5,theme:TerminalView.palette(currentTheme())});
+    const term=new Terminal({fontFamily:'Menlo, Monaco, "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:record.layout?.fontSize || 13,lineHeight:1.18,cursorBlink:true,scrollback:20000,convertEol:false,minimumContrastRatio:4.5,allowProposedApi:true,theme:TerminalView.palette(currentTheme())});
     TerminalView.installScreenHistory(term);
+    term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';
     const addon=new FitAddon.FitAddon(),serializer=new SerializeAddon.SerializeAddon();term.loadAddon(addon);term.loadAddon(serializer);term.open(content);term.options.disableStdin=true;
     const input=term.textarea;
     input.setAttribute('autocapitalize','none');input.setAttribute('autocorrect','off');input.spellcheck=false;
@@ -368,6 +369,8 @@ async function connectTerminal(win,forwarding) {
     const occupied=await api('/api/sessions/'+win.record.id+'/connection',{});
     if(occupied.shared)forwarding=occupied.forwarding;
     if(!win.element.isConnected)return;
+    await new Promise(resolve=>win.term.write('',resolve));
+    if(!win.element.isConnected)return;
     openTransport(win,forwarding);
   }catch(error){toast(error.message,true);}
   finally{win.connectingGuard=false;}
@@ -404,13 +407,13 @@ function toggleMaximize(win){
 function startDrag(event,win,direction){
   if(mobile?.isMobile()||event.button!==0 || win.maximized)return;event.preventDefault();focusWindow(win);
   const target=event.currentTarget,startX=event.clientX,startY=event.clientY,start={...win.geometry};
-  target.setPointerCapture(event.pointerId);document.body.classList.add('dragging');
+  target.setPointerCapture(event.pointerId);win.dragging=true;document.body.classList.add('dragging');
   const move=e=>{const dx=e.clientX-startX,dy=e.clientY-startY;let g={...start};
     if(direction==='move'){g.x=Math.max(0,start.x+dx);g.y=Math.max(0,start.y+dy);}
     else {if(direction.includes('e'))g.width=Math.max(380,start.width+dx);if(direction.includes('s'))g.height=Math.max(220,start.height+dy);if(direction.includes('w')){g.x=Math.max(0,Math.min(start.x+dx,start.x+start.width-380));g.width=start.width+start.x-g.x;}if(direction.includes('n')){g.y=Math.max(0,Math.min(start.y+dy,start.y+start.height-220));g.height=start.height+start.y-g.y;}}
     applyGeometry(win,g,false);
   };
-  const end=()=>{target.removeEventListener('pointermove',move);target.removeEventListener('pointerup',end);target.removeEventListener('pointercancel',end);document.body.classList.remove('dragging');saveLayout(win);};
+  const end=()=>{target.removeEventListener('pointermove',move);target.removeEventListener('pointerup',end);target.removeEventListener('pointercancel',end);win.dragging=false;document.body.classList.remove('dragging');fit(win);saveLayout(win);};
   target.addEventListener('pointermove',move);target.addEventListener('pointerup',end);target.addEventListener('pointercancel',end);
 }
 function destroyWindow(id){const win=windows.get(id);if(!win)return;clearTimeout(win.saveTimer);clearInterval(win.heartbeat);win.historySerial++;win.scroller.dispose();win.ws?.close();win.term.dispose();win.element.remove();windows.delete(id);if(selectedWindow===id)selectedWindow=null;updateCanvas();renderSidebar();}

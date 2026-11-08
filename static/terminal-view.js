@@ -9,7 +9,6 @@
   function palette(theme){return {...palettes[theme==='dark'?'dark':'light']};}
   function installScreenHistory(term){
     const {_bufferService:bufferService,_inputHandler:input}=term._core;
-    let inlineBuffer,previousClear;
     const upperRegion=buffer=>buffer.scrollTop===0&&buffer.scrollBottom<term.rows-1;
     function scroll(params,deleting){
       const buffer=bufferService.buffer;
@@ -18,7 +17,6 @@
       // Screen uses DL for multi-row scrolling inside the upper region.
       // A full-screen DL can be a redraw and must not become history.
       if(deleting&&(!upperRegion(buffer)||count>buffer.scrollBottom))return false;
-      if(upperRegion(buffer))inlineBuffer=buffer;
       const erase=input._eraseAttrData();
       for(let i=0;i<count;i++)bufferService.scroll(erase);
       if(deleting)buffer.x=0;
@@ -27,32 +25,6 @@
     }
     term.parser.registerCsiHandler({final:'M'},params=>scroll(params,true));
     term.parser.registerCsiHandler({final:'S'},params=>scroll(params,false));
-    term.onLineFeed(()=>{
-      const buffer=bufferService.buffer;
-      if(buffer.hasScrollback&&upperRegion(buffer)&&buffer.y===buffer.scrollBottom)inlineBuffer=buffer;
-    });
-    term.parser.registerCsiHandler({final:'J'},([mode])=>{
-      const buffer=bufferService.buffer;
-      const first=previousClear;
-      previousClear=null;
-      if(mode===3)inlineBuffer=null;
-      if(mode!==2||buffer!==inlineBuffer||buffer.y!==0||buffer.x!==0||!buffer.ybase)return false;
-      // Screen translates an inline TUI's ED 2 + ED 3 into two full clears.
-      // Only an empty second clear of the same frame indicates a rebuild.
-      if(first?.buffer===buffer&&first.base===buffer.ybase){
-        let blank=true;
-        for(let row=0;row<term.rows&&blank;row++){
-          blank=!buffer.lines.get(buffer.ybase+row)?.translateToString(true);
-        }
-        if(blank){
-          input.eraseInDisplay({params:[3]});
-          inlineBuffer=null;
-          return false;
-        }
-      }
-      previousClear={buffer,base:buffer.ybase};
-      return false;
-    });
   }
   function history(term,archive=''){
     const buffer=term.buffer.normal,lines=[];

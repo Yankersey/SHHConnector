@@ -1083,7 +1083,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         assets = {"/": "index.html", "/app.js": "app.js", "/mouse-filter.js": "mouse-filter.js", "/terminal-view.js": "terminal-view.js", "/style.css": "style.css",
                   "/mobile.js": "mobile.js", "/mobile.css": "mobile.css", "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg", "/sharing.js": "sharing.js",
                   "/vendor/xterm.js": "vendor/xterm.js", "/vendor/xterm.css": "vendor/xterm.css",
-                  "/vendor/addon-fit.js": "vendor/addon-fit.js", "/vendor/addon-serialize.js": "vendor/addon-serialize.js"}
+                  "/vendor/addon-fit.js": "vendor/addon-fit.js", "/vendor/addon-serialize.js": "vendor/addon-serialize.js",
+                  "/vendor/addon-unicode11.js": "vendor/addon-unicode11.js"}
         if path not in assets:
             return self.response(404, dict(error="Not found"))
         file = ROOT / "static" / assets[path]

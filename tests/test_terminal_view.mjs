@@ -54,11 +54,14 @@ controller.dispose();assert.ok(removed&&disposed);
 
 // Use the shipped renderer as well as mocks: screen enters an alternate
 // display on attachment even when its remote shell is printing ordinary logs.
-Object.assign(context,{console,setTimeout,clearTimeout,setInterval,clearInterval,TextDecoder,TextEncoder,navigator:{userAgent:'node-tests',platform:'Linux'}});
+Object.assign(context,{console,setTimeout,clearTimeout,setInterval,clearInterval,TextDecoder,TextEncoder,performance,structuredClone,queueMicrotask,navigator:{userAgent:'node-tests',platform:'Linux'}});
 context.self=context;context.window=context;
 vm.runInContext(fs.readFileSync(new URL('../static/vendor/xterm.js',import.meta.url),'utf8'),context);
+vm.runInContext(fs.readFileSync(new URL('../static/vendor/addon-unicode11.js',import.meta.url),'utf8'),context);
 vm.runInContext(fs.readFileSync(new URL('../static/mouse-filter.js',import.meta.url),'utf8'),context);
-const actual=new context.Terminal({cols:80,rows:24,scrollback:20000,allowProposedAPI:true});
+const actual=new context.Terminal({cols:80,rows:24,scrollback:20000,allowProposedApi:true});
+actual.loadAddon(new context.Unicode11Addon.Unicode11Addon());
+actual.unicode.activeVersion='11';
 const filter=new context.TerminalMouseFilter(false,{keepScrollback:true}),decoder=new TextDecoder();
 const output='\x1b[?1049h\x1b[2J\x1b[H'+Array.from({length:300},(_,i)=>'\x1b[32m第 '+i+' 行 │ 中文 café é 🙂\x1b[0m\r\n').join('');
 const encoded=new TextEncoder().encode(output);let rendered='';
@@ -75,6 +78,7 @@ assert.ok(!previous.includes('\x1b'));
 // A new transport resets terminal state, while the review snapshot retains
 // previously received Unicode without contacting screen's lossy hardcopy path.
 actual.reset();await new Promise(resolve=>actual.write('重新连接后的中文\r\n',resolve));
+assert.equal(actual.unicode.activeVersion,'11');
 const reconnected=view.history(actual,previous);
 assert.ok(reconnected.includes('第 0 行 │ 中文 café é 🙂'));
 assert.ok(reconnected.includes('重新连接后的中文'));
@@ -134,9 +138,10 @@ await write(redraw,commit);
 assert.equal(redraw.buffer.normal.baseY,2);
 await write(redraw,'\x1b[H\x1b[2J临时画面\x1b[H\x1b[2J');
 assert.equal(redraw.buffer.normal.baseY,2); // ordinary redraws retain history
-await write(redraw,'\x1b[H\x1b[2J'); // Screen's ED 3 is another empty ED 2
-assert.equal(redraw.buffer.normal.baseY,0);
-await write(redraw,commit);
+await write(redraw,'\x1b[H\x1b[2J'); // repeated ED 2 does not imply ED 3
+assert.equal(redraw.buffer.normal.baseY,2);
 assert.equal(view.history(redraw).match(/第一条回复/g).length,1);
+await write(redraw,'\x1b[3J');
+assert.equal(redraw.buffer.normal.baseY,0);
 redraw.dispose();
 console.log('PASS terminal Unicode history, theme and scroll interactions');
