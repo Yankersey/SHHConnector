@@ -12,6 +12,10 @@ if [ ! -f "$checkout/launcher.py" ] || [ ! -x "$checkout/start.sh" ]; then
   echo '找不到 ScreenDesk 项目，请从项目目录运行这个安装脚本。' >&2
   exit 1
 fi
+if ! swiftc=$(/usr/bin/xcrun --find swiftc 2>/dev/null); then
+  echo '请先运行 xcode-select --install 安装苹果命令行工具，再运行安装脚本。' >&2
+  exit 1
+fi
 
 applications="$HOME/Applications"
 destination="$applications/ScreenDesk.app"
@@ -24,11 +28,15 @@ if [ -L "$destination" ] || { [ -e "$destination" ] && {
 fi
 
 staging=$(mktemp -d)
-trap 'rm -rf "$staging"' EXIT
+install_staging=
+trap 'rm -rf "$staging"; if [ -n "$install_staging" ]; then rm -rf "$install_staging"; fi' EXIT
 bundle="$staging/ScreenDesk.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 printf '%s\n' "$checkout" > "$bundle/Contents/Resources/checkout.txt"
 cp "$installer/assets/ScreenDesk.icns" "$bundle/Contents/Resources/ScreenDesk.icns"
+"$swiftc" -sdk "$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
+  -swift-version 5 -parse-as-library -O -target "$(uname -m)-apple-macos12.0" \
+  "$installer/macos/ScreenDesk.swift" -o "$bundle/Contents/MacOS/ScreenDesk"
 
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -41,35 +49,26 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>ScreenDesk</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>ScreenDesk.icns</string>
-  <key>CFBundleVersion</key><string>2</string>
-  <key>LSUIElement</key><true/>
+  <key>CFBundleVersion</key><string>3</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>ScreenDesk 需要打开保存在「文稿」中的项目和工作区。</string>
 </dict>
 </plist>
 PLIST
 
-cat > "$bundle/Contents/MacOS/ScreenDesk" <<'LAUNCHER'
-#!/bin/sh
-set -eu
-contents=$(cd "$(dirname "$0")/.." && pwd -P)
-exec /usr/bin/open -a Terminal "$contents/Resources/启动 ScreenDesk.command"
-LAUNCHER
-
-cat > "$bundle/Contents/Resources/启动 ScreenDesk.command" <<'COMMAND'
-#!/bin/sh
-set -eu
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
-resources=$(cd "$(dirname "$0")" && pwd -P)
-IFS= read -r checkout < "$resources/checkout.txt"
-if [ ! -x "$checkout/start.sh" ]; then
-  echo '找不到 ScreenDesk 项目。项目目录移动后，请重新安装启动器。' >&2
-  exit 1
-fi
-exec "$checkout/启动 ScreenDesk.command"
-COMMAND
-chmod +x "$bundle/Contents/MacOS/ScreenDesk" "$bundle/Contents/Resources/启动 ScreenDesk.command"
 /usr/bin/plutil -lint "$bundle/Contents/Info.plist"
 /usr/bin/codesign --sign - "$bundle"
 mkdir -p "$applications"
-/usr/bin/ditto "$bundle" "$destination"
-/usr/bin/codesign --verify --strict "$destination"
+install_staging=$(mktemp -d "$applications/.screendesk.XXXXXX")
+/usr/bin/ditto "$bundle" "$install_staging/ScreenDesk.app"
+/usr/bin/codesign --verify --strict "$install_staging/ScreenDesk.app"
+if [ -e "$destination" ]; then
+  mv "$destination" "$install_staging/previous.app"
+fi
+if ! mv "$install_staging/ScreenDesk.app" "$destination"; then
+  if [ -e "$install_staging/previous.app" ]; then
+    mv "$install_staging/previous.app" "$destination" || install_staging=
+  fi
+  exit 1
+fi
 printf '已安装 %s\n' "$destination"

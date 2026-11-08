@@ -38,6 +38,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Build and verify the standalone macOS app
+        run: |
+          checkout="$PWD"
+          app_home=$(mktemp -d)
+          HOME="$app_home" sh install-macos-app.sh "$checkout"
+          /usr/bin/codesign --verify --strict "$app_home/Applications/ScreenDesk.app"
       - run: python -m pip install -r requirements-test.txt
       - name: macOS screen and SFTP integration tests
         env:

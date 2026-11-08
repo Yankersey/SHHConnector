@@ -12,7 +12,9 @@ macOS 解压整个文件夹后，双击 **启动 ScreenDesk.command**。浏览�
 sh start.sh
 ```
 
-也可以在项目目录运行 `sh install-macos-app.sh`，再从 Finder 的个人「应用程序」文件夹打开 **ScreenDesk.app**。应用通过 macOS 终端启动当前项目并打开浏览器。退出后台后再次打开可检查 Git 更新。
+macOS 12 或更新版本也可在项目目录运行 `sh install-macos-app.sh`，再从 Finder 的个人「应用程序」文件夹打开 **ScreenDesk.app**。它有独立的窗口和程序坞图标。安装器使用 Apple 命令行工具编译，按提示运行 `xcode-select --install` 即可安装工具。如果 macOS 询问是否允许访问项目所在的「文稿」文件夹，选择允许。
+
+关闭应用窗口时后台继续运行，点击程序坞图标可重新打开工作台。使用 ⌘Q 退出时，应用自己启动的后台会分离终端并退出。如果打开应用前已经有后台在运行，应用会复用它，可用工作台里的「退出程序」关闭该后台。下次打开时会检查 Git 更新。
 
 Linux 运行 `sh start.sh`。Windows 首次双击 **setup-windows.cmd**，再双击 **install-windows-shortcuts.cmd**，以后从桌面或开始菜单打开 **ScreenDesk**。原生版直接使用 Windows Python、ConPTY 和系统 OpenSSH，无需 WSL 或虚拟机。详见 [Windows 使用说明](WINDOWS.md)。WSL 方式见 [start-wsl.cmd](WINDOWS-WSL.md)。服务器需要 SSH、SFTP 和 GNU screen，不需要远程 Python。
 
