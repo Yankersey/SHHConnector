@@ -75,8 +75,15 @@ jobs:
         run: |
           $fixture = Join-Path $env:RUNNER_TEMP 'ScreenDesk shortcut test'
           New-Item -ItemType Directory -Path $fixture | Out-Null
-          Copy-Item install-windows-shortcuts.cmd, install-windows-shortcuts.js, assets -Destination $fixture -Recurse
-          Set-Content -Encoding Ascii (Join-Path $fixture 'start-windows.cmd') '@echo launched>shortcut-launch.txt'
+          Copy-Item install-windows-shortcuts.cmd, install-windows-shortcuts.js, install_windows_app.py, assets -Destination $fixture -Recurse
+          @'
+          from pathlib import Path
+          import sys
+          def main():
+              assert sys.stdout is None and sys.stderr is None
+              Path(__file__).with_name('shortcut-launch.txt').write_text('windowed')
+              return 0
+          '@ | Set-Content -Encoding UTF8 (Join-Path $fixture 'windows_app.py')
           Push-Location $fixture
           try {
             foreach ($attempt in 1, 2) {
@@ -88,14 +95,14 @@ jobs:
               $path = Join-Path ([Environment]::GetFolderPath($folder)) 'ScreenDesk.lnk'
               if (!(Test-Path -LiteralPath $path)) { throw "Missing shortcut at $path" }
               $link = $shell.CreateShortcut($path)
-              if ($link.TargetPath -ne (Join-Path $fixture 'start-windows.cmd') -or
+              if ($link.TargetPath -ne (Join-Path $fixture 'data\desktop\ScreenDesk.exe') -or
                   $link.WorkingDirectory -ne $fixture -or
                   ($link.IconLocation -replace ',\s*0$', '') -ne (Join-Path $fixture 'assets\ScreenDesk.ico')) {
                 throw "Unexpected shortcut settings at $path"
               }
             }
             $desktop = [Environment]::GetFolderPath('DesktopDirectory')
-            Start-Process -FilePath (Join-Path $desktop 'ScreenDesk.lnk')
+            Start-Process -FilePath (Join-Path $desktop 'ScreenDesk.lnk') -WindowStyle Hidden
             for ($attempt = 0; $attempt -lt 50 -and !(Test-Path 'shortcut-launch.txt'); $attempt++) {
               Start-Sleep -Milliseconds 200
             }
@@ -108,6 +115,11 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
           PYTHONUTF8: '1'
         run: python -m unittest discover -s tests -v
+      - name: Render the workspace in a real WebView2 window
+        env:
+          PYTHONUTF8: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python tests/windows_webview_smoke.py
       - name: JavaScript mouse protocol tests
         run: |
           node tests/test_mouse.mjs

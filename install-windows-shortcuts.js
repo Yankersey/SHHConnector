@@ -2,7 +2,7 @@
 var files = new ActiveXObject("Scripting.FileSystemObject");
 var shell = new ActiveXObject("WScript.Shell");
 var root = files.GetParentFolderName(WScript.ScriptFullName);
-var launcher = files.BuildPath(root, "start-windows.cmd");
+var launcher = files.BuildPath(root, "data\\desktop\\ScreenDesk.exe");
 var icon = files.BuildPath(root, "assets\\ScreenDesk.ico");
 var description = "ScreenDesk SSH workspace";
 

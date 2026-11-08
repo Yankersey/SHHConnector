@@ -2,7 +2,7 @@
 
 代码仓库：[Yankersey/SHHConnector](https://github.com/Yankersey/SHHConnector)。[Windows / WSL 安装](WINDOWS.md) · [修改与双机同步](CONTRIBUTING.md)。
 
-本地 SSH / GNU screen 工作台，支持 macOS / Linux / 原生 Windows，Python 3.9+。macOS / Linux 无需 pip、npm 安装；Windows 仅需 pywinpty，终端网页资源均已打包。
+本地 SSH / GNU screen 工作台，支持 macOS / Linux / 原生 Windows，Python 3.9+。macOS / Linux 无需 pip、npm 安装；Windows 安装 pywinpty 和 pywebview，终端网页资源均已打包。
 
 ## 启动
 
@@ -16,7 +16,7 @@ macOS 12.3 或更新版本也可在项目目录运行 `sh install-macos-app.sh`�
 
 关闭应用窗口时后台继续运行，点击程序坞图标可重新打开工作台。使用 ⌘Q 退出时，应用自己启动的后台会分离终端并退出。如果打开应用前已经有后台在运行，应用会复用它，可用工作台里的「退出程序」关闭该后台。下次打开时会检查 Git 更新。
 
-Linux 运行 `sh start.sh`。Windows 首次双击 **setup-windows.cmd**，再双击 **install-windows-shortcuts.cmd**，以后从桌面或开始菜单打开 **ScreenDesk**。原生版直接使用 Windows Python、ConPTY 和系统 OpenSSH，无需 WSL 或虚拟机。详见 [Windows 使用说明](WINDOWS.md)。WSL 方式见 [start-wsl.cmd](WINDOWS-WSL.md)。服务器需要 SSH、SFTP 和 GNU screen，不需要远程 Python。
+Linux 运行 `sh start.sh`。Windows 首次双击 **setup-windows.cmd**，以后从桌面或开始菜单打开 **ScreenDesk**：只显示独立的 WebView2 工作台窗口，后台隐藏启动，没有命令行窗口或浏览器标签页。原生版直接使用 Windows Python、ConPTY 和系统 OpenSSH，无需 WSL 或虚拟机。详见 [Windows 使用说明](WINDOWS.md)。WSL 方式见 [start-wsl.cmd](WINDOWS-WSL.md)。服务器需要 SSH、SFTP 和 GNU screen，不需要远程 Python。
 
 Git 克隆版本会在启动器启动前检查远程分支并执行快进更新；界面左下角显示提交号。离线 / 开发时显式使用 `sh start.sh --offline`。直接运行 `python3 app.py` 可以启动本地代码，但不会检查 Git 更新。ZIP 版本不包含 .git，因此没有自动更新功能。
 

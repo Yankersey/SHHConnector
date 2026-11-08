@@ -12,8 +12,10 @@ if not exist ".venv\Scripts\python.exe" python -m venv .venv
 if errorlevel 1 goto failed
 ".venv\Scripts\python.exe" -m pip install -r requirements-windows.txt
 if errorlevel 1 goto failed
-call start-windows.cmd %*
-exit /b %ERRORLEVEL%
+call install-windows-shortcuts.cmd --quiet
+if errorlevel 1 goto failed
+start "" "data\desktop\ScreenDesk.exe" %*
+exit /b 0
 :failed
 echo Setup failed. Send the error above to Codex.
 pause
