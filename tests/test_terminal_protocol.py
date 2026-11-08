@@ -88,7 +88,8 @@ class TerminalProtocolTests(unittest.TestCase):
             source = root/"input.terminfo"
             source.write_text(
                 "sd-legacy|ScreenDesk legacy input fixture,\n\tkmous=\\E[M,\n\tXM@,\n\tuse=xterm-256color,\n"
-                "sd-sgr|ScreenDesk SGR input fixture,\n\tkmous=\\E[<,\n\tXM#1006,\n\tuse=xterm-256color,\n")
+                "sd-sgr|ScreenDesk SGR input fixture,\n\tkmous=\\E[<,\n"
+                "\tXM=\\E[?1006;1000%?%p1%{1}%=%th%el%;,\n\tuse=xterm-256color,\n")
             subprocess.run(["tic","-x","-o",str(terminfo),str(source)],check=True,capture_output=True,timeout=5)
             environment["TERMINFO"] = str(terminfo)
             for encoding in ("legacy", "sgr"):
