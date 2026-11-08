@@ -26,11 +26,11 @@ assert.ok(view.history(terminal([line('新连接')]),many.map((_,i)=>'旧记录 
 const bounded=view.history(terminal([line('🙂'+'中'.repeat(2097151))]));
 assert.equal(bounded,'中'.repeat(2097151));
 
-let wheel,removed=false,disposed=false,history=0,live=0,changes=0,remoteMouse=false,historyOpen=false;
+let wheel,removed=false,disposed=false,history=0,live=0,changes=0,remoteMouse=false,historyOpen=false,archived=false,canPan=true;
 const calls=[];
-const term={rows:20,buffer:{active:{type:'normal',baseY:300,viewportY:300}},scrollLines:n=>calls.push(['lines',n]),scrollPages:n=>calls.push(['pages',n]),scrollToTop:()=>calls.push(['top']),onScroll:()=>({dispose:()=>{disposed=true;}})};
+const term={rows:20,buffer:{active:{type:'normal',baseY:300,viewportY:290}},_core:{_bufferService:{scrollLines:n=>calls.push(['lines',n])}},onScroll:()=>({dispose:()=>{disposed=true;}})};
 const element={addEventListener:(name,listener,options)=>{assert.equal(name,'wheel');assert.equal(options.capture,true);assert.equal(options.passive,false);wheel=listener;},removeEventListener:()=>{removed=true;}};
-const controller=view.installScroll(term,element,{remoteMouse:()=>remoteMouse,historyOpen:()=>historyOpen,lineHeight:()=>20,openHistory:()=>{history++;},changed:()=>{changes++;},live:()=>{live++;}});
+const controller=view.installScroll(term,element,{remoteMouse:()=>remoteMouse,historyOpen:()=>historyOpen,hasArchive:()=>archived,nativePan:()=>canPan,lineHeight:()=>20,openHistory:()=>{history++;},changed:()=>{changes++;},live:()=>{live++;}});
 function event(values={}){return {deltaY:0,deltaMode:0,type:'keydown',shiftKey:false,ctrlKey:false,metaKey:false,altKey:false,preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;},...values};}
 let e=event({deltaY:-80});wheel(e);assert.deepEqual(calls.pop(),['lines',-4]);assert.ok(e.prevented&&e.stopped);
 wheel(event({deltaY:60}));assert.deepEqual(calls.pop(),['lines',3]);
@@ -43,13 +43,17 @@ remoteMouse=true;e=event({deltaY:-60});wheel(e);assert.ok(!e.prevented);assert.e
 e=event({deltaY:-60,shiftKey:true});wheel(e);assert.equal(history,2);assert.ok(e.prevented);
 historyOpen=true;e=event({deltaY:-60});wheel(e);assert.ok(!e.prevented);assert.equal(history,2);historyOpen=false;
 remoteMouse=false;term.buffer.active.type='normal';
-e=event({key:'PageUp',shiftKey:true});assert.ok(controller.key(e));assert.deepEqual(calls.pop(),['pages',-1]);assert.ok(e.prevented);
-assert.ok(controller.key(event({key:'PageDown',shiftKey:true})));assert.deepEqual(calls.pop(),['pages',1]);
-assert.ok(controller.key(event({key:'Home',shiftKey:true})));assert.deepEqual(calls.pop(),['top']);
+e=event({key:'PageUp',shiftKey:true});assert.ok(controller.key(e));assert.deepEqual(calls.pop(),['lines',-19]);assert.ok(e.prevented);
+assert.ok(controller.key(event({key:'PageDown',shiftKey:true})));assert.deepEqual(calls.pop(),['lines',19]);
+assert.ok(controller.key(event({key:'Home',shiftKey:true})));assert.deepEqual(calls.pop(),['lines',-290]);
 assert.ok(controller.key(event({key:'End',shiftKey:true})));assert.equal(live,1);
 assert.equal(controller.key(event({key:'PageUp'})),false);
 assert.equal(controller.key(event({key:'PageUp',shiftKey:true,ctrlKey:true})),false);
 assert.ok(changes>=6);
+term.buffer.active.viewportY=0;term.buffer.active.baseY=0;
+e=event({deltaY:-60});wheel(e);assert.ok(e.stopped&&!e.prevented); // no local history yet
+archived=true;
+e=event({deltaY:-60});wheel(e);assert.equal(history,3);assert.ok(e.prevented);
 controller.dispose();assert.ok(removed&&disposed);
 
 // Use the shipped renderer as well as mocks: screen enters an alternate
@@ -125,8 +129,9 @@ for(const command of ['\x1b[1;4r\x1b[1;5H\x1b[2M','\x1b[1;4r\x1b[8;5H\x1b[2S']){
 
 // Screen sends a top-row DL for some full redraws. Repainting the same
 // lines should leave one copy of the transcript and no old composer.
-const redraw=new context.Terminal({cols:40,rows:8,scrollback:20});
-view.installScreenHistory(redraw);
+const redraw=new context.Terminal({cols:40,rows:8,scrollback:100,disableStdin:true});
+let archive='';
+view.installScreenHistory(redraw,end=>{archive=view.history(redraw,archive,end);});
 const frame='提问\r\n运行中的状态栏\r\n旧回复\x1b[8;1Hcomposer';
 await write(redraw,frame+'\x1b[H\x1b[3M'+frame);
 assert.equal(redraw.buffer.normal.baseY,0);
@@ -136,12 +141,23 @@ redraw.reset();
 const commit='\x1b[1;4r第一条回复\r\n第二条回复\r\n第三条回复\r\n第四条回复\r\n第五条回复\r\n第六条回复\x1b[r';
 await write(redraw,commit);
 assert.equal(redraw.buffer.normal.baseY,2);
-await write(redraw,'\x1b[H\x1b[2J临时画面\x1b[H\x1b[2J');
-assert.equal(redraw.buffer.normal.baseY,2); // ordinary redraws retain history
-await write(redraw,'\x1b[H\x1b[2J'); // repeated ED 2 does not imply ED 3
-assert.equal(redraw.buffer.normal.baseY,2);
+await write(redraw,'\x1b[2;4r\x1b[H\x1b[2J');
+assert.equal(redraw.buffer.normal.baseY,6);
+assert.equal(visible(redraw).join('').trim(),'');
+await write(redraw,'\x1b[H\x1b[2J'); // an empty redraw doesn't add blank history
+assert.equal(redraw.buffer.normal.baseY,6);
+assert.match(view.history(redraw),/第一条回复\n第二条回复\n第三条回复\n第四条回复\n第五条回复\n第六条回复/);
+view.scrollLocal(redraw,-6);
+await write(redraw,'\x1b[r输出持续追加\r\n'.repeat(12));
+assert.equal(redraw.buffer.normal.viewportY,0);
 assert.equal(view.history(redraw).match(/第一条回复/g).length,1);
 await write(redraw,'\x1b[3J');
 assert.equal(redraw.buffer.normal.baseY,0);
+assert.ok(archive.includes('第一条回复'));
+await write(redraw,'\x1b[H\x1b[J\x1b[H清屏后的新输出');
+assert.ok(view.history(redraw,archive).includes('输出持续追加'));
+assert.ok(view.history(redraw,archive).includes('清屏后的新输出'));
+await write(redraw,'\x1bc');
+assert.ok(archive.includes('清屏后的新输出'));
 redraw.dispose();
 console.log('PASS terminal Unicode history, theme and scroll interactions');

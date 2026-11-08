@@ -274,7 +274,6 @@ async function openSession(record, shouldConnect) {
     const roleLabel=el('span','sharing-role','未连接'),control=el('button','window-control','接管操作');control.disabled=true;
     footer.append(dot,stateLabel,reconnect,roleLabel,control,review,live,refLabel);element.append(header,content,footer);$('#canvas').append(element);
     const term=new Terminal({fontFamily:'Menlo, Monaco, "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:record.layout?.fontSize || 13,lineHeight:1.18,cursorBlink:true,scrollback:20000,convertEol:false,minimumContrastRatio:4.5,allowProposedApi:true,theme:TerminalView.palette(currentTheme())});
-    TerminalView.installScreenHistory(term);
     term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';
     const addon=new FitAddon.FitAddon(),serializer=new SerializeAddon.SerializeAddon();term.loadAddon(addon);term.loadAddon(serializer);term.open(content);term.options.disableStdin=true;
     const input=term.textarea;
@@ -285,13 +284,16 @@ async function openSession(record, shouldConnect) {
     historyTitle.title='保留本窗口已收到的内容；服务器更早的记录可按 Ctrl+A，再按 [ 回看。';
     const historyScroll=el('div','history-scroll'),historyText=el('pre');historyScroll.append(historyText);historyView.append(historyHeading,historyScroll);content.append(historyView);
     win={record,element,term,serializer,fit:addon,dot,stateLabel,reconnect,refLabel,roleLabel,control,canControl:false,viewId:null,viewerCount:0,ws:null,geometry:{},maximized:false,forwarding,mouse,remoteMouse,mouseFilter:new TerminalMouseFilter(remoteMouse,{keepScrollback:true}),decoder:new TextDecoder(),live,historyView,historyText,historyScroll,historyRefresh,historyArchive:'',hasOutput:false,historyLoading:false,historySerial:0};windows.set(record.id,win);
+    TerminalView.installScreenHistory(term,end=>{
+      if(win.hasOutput&&end)win.historyArchive=TerminalView.history(term,win.historyArchive,end);
+    });
     win.inputGate=ScreenDeskMobile.bindInput(input,()=>mobile.render(currentWindows(),selectedWindow));
     win.inputGate.refresh(false,mobile.manualInput());
     control.onclick=()=>send(win,{type:'control',release:win.canControl});
     win.scroller=TerminalView.installScroll(term,content,{nativePan:event=>{
       if(win.canControl||win.ws?.readyState!==WebSocket.OPEN)return false;
       return event.deltaY<0?content.scrollTop>0:content.scrollTop+content.clientHeight<content.scrollHeight-1;
-    },remoteMouse:()=>win.canControl&&win.remoteMouse,historyOpen:()=>!historyView.hidden,lineHeight:()=>$('.xterm-screen',content).offsetHeight/(term.rows||24),openHistory:()=>openHistory(win),changed:()=>updateScrollState(win),live:()=>returnLive(win)});
+    },remoteMouse:()=>win.canControl&&win.remoteMouse,historyOpen:()=>!historyView.hidden,hasArchive:()=>!!win.historyArchive,lineHeight:()=>$('.xterm-screen',content).offsetHeight/(term.rows||24),openHistory:()=>openHistory(win,false,true),changed:()=>updateScrollState(win),live:()=>returnLive(win)});
     review.onclick=()=>openHistory(win);
     live.onclick=()=>returnLive(win);historyClose.onclick=()=>returnLive(win);historyRefresh.onclick=()=>openHistory(win,true);
     historyView.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();returnLive(win);}});
@@ -335,8 +337,8 @@ function applySharing(win,data,replaying=false){
   mobile?.render(currentWindows(),selectedWindow);
 }
 function updateScrollState(win){win.live.hidden=win.historyView.hidden&&win.term.buffer.active.viewportY>=win.term.buffer.active.baseY;}
-function returnLive(win,focus=true){win.historySerial++;win.historyView.hidden=true;win.term.scrollToBottom();const content=$('.terminal-content',win.element);content.scrollTop=content.scrollHeight;updateScrollState(win);if(focus&&!mobile?.manualInput())win.term.focus();}
-async function openHistory(win,refresh=false){
+function returnLive(win,focus=true){win.historySerial++;win.historyView.hidden=true;const {baseY,viewportY}=win.term.buffer.active;TerminalView.scrollLocal(win.term,baseY-viewportY);const content=$('.terminal-content',win.element);content.scrollTop=content.scrollHeight;updateScrollState(win);if(focus&&!mobile?.manualInput())win.term.focus();}
+async function openHistory(win,refresh=false,older=false){
   if(win.historyLoading)return;
   if(!refresh&&!win.historyView.hidden)return;
   win.historyView.hidden=false;win.historyView.focus();updateScrollState(win);
@@ -346,7 +348,7 @@ async function openHistory(win,refresh=false){
     await new Promise(resolve=>win.term.write('',resolve));
     if(serial!==win.historySerial||!win.element.isConnected)return;
     win.historyText.textContent=win.hasOutput||win.historyArchive?TerminalView.history(win.term,win.historyArchive):'连接后可回看本窗口收到的内容。服务器更早的记录可在终端按 Ctrl+A，再按 [ 查看；按 Esc 返回。';
-    requestAnimationFrame(()=>{if(serial===win.historySerial)win.historyScroll.scrollTop=Math.max(0,win.historyScroll.scrollHeight-win.historyScroll.clientHeight*1.7);});
+    requestAnimationFrame(()=>{if(serial===win.historySerial)win.historyScroll.scrollTop=older?0:Math.max(0,win.historyScroll.scrollHeight-win.historyScroll.clientHeight*1.7);});
   }catch(error){if(serial===win.historySerial)win.historyText.textContent='读取本地历史未完成：'+error.message;}
   finally{win.historyLoading=false;win.historyRefresh.disabled=false;}
 }

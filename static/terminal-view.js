@@ -7,7 +7,7 @@
   };
   function resolveTheme(preference,systemDark){return preference==='light'||preference==='dark'?preference:systemDark?'dark':'light';}
   function palette(theme){return {...palettes[theme==='dark'?'dark':'light']};}
-  function installScreenHistory(term){
+  function installScreenHistory(term,archiveUntil){
     const {_bufferService:bufferService,_inputHandler:input}=term._core;
     const upperRegion=buffer=>buffer.scrollTop===0&&buffer.scrollBottom<term.rows-1;
     function scroll(params,deleting){
@@ -25,13 +25,39 @@
     }
     term.parser.registerCsiHandler({final:'M'},params=>scroll(params,true));
     term.parser.registerCsiHandler({final:'S'},params=>scroll(params,false));
+    term.parser.registerCsiHandler({final:'J'},([mode])=>{
+      const buffer=bufferService.buffer;
+      if(!buffer.hasScrollback)return false;
+      if(mode===3){
+        archiveUntil?.(buffer.ybase);
+        return false;
+      }
+      if(mode!==2&&(mode!==0||buffer.x!==0||buffer.y!==0))return false;
+      // ED2 and ED0 at home clear the whole viewport, regardless of margins.
+      // Use xterm's native scroll-on-erase with the entire viewport in scope.
+      const {scrollTop,scrollBottom}=buffer;
+      const scrollOnErase=term.options.scrollOnEraseInDisplay;
+      buffer.scrollTop=0;
+      buffer.scrollBottom=term.rows-1;
+      term.options.scrollOnEraseInDisplay=true;
+      try{return input.eraseInDisplay({params:[2]});}
+      finally{
+        term.options.scrollOnEraseInDisplay=scrollOnErase;
+        buffer.scrollTop=scrollTop;
+        buffer.scrollBottom=scrollBottom;
+      }
+    });
+    term.parser.registerEscHandler({final:'c'},()=>{
+      archiveUntil?.(term.buffer.normal.length);
+      return false;
+    });
   }
-  function history(term,archive=''){
+  function history(term,archive='',end=term.buffer.normal.length){
     const buffer=term.buffer.normal,lines=[];
-    for(let i=Math.max(0,buffer.length-20000);i<buffer.length;i++){
+    for(let i=Math.max(0,end-20000);i<end;i++){
       const line=buffer.getLine(i);
       if(!line)continue;
-      const wraps=!!buffer.getLine(i+1)?.isWrapped;
+      const wraps=i+1<end&&!!buffer.getLine(i+1)?.isWrapped;
       lines.push(line.translateToString(!wraps)+(wraps?'':'\n'));
     }
     let text=(archive?archive+'\n':'')+lines.join('').replace(/\n+$/,'');
@@ -45,39 +71,50 @@
     }
     return text;
   }
+  function scrollLocal(term,lines){
+    // Use the same buffer operation as xterm's scrollbar. It also works
+    // when the DOM viewport is being resized or the terminal is read-only.
+    term._core._bufferService.scrollLines(lines);
+  }
   function installScroll(term,element,options){
     let remainder=0;
-    const alternate=()=>term.buffer.active.type==='alternate';
+    const needsReview=()=>term.buffer.active.type==='alternate'||
+      (term.buffer.active.viewportY===0&&options.hasArchive?.());
     const stop=event=>{event.preventDefault();event.stopPropagation();};
     const wheel=event=>{
       if(options.historyOpen()||event.ctrlKey||!event.deltaY)return;
-      if(options.nativePan?.(event)&&!event.shiftKey){event.stopPropagation();return;}
       // Remote mouse is an explicit per-window opt-in. Shift always allows local review.
       if(options.remoteMouse()&&!event.shiftKey)return;
+      const {baseY,viewportY}=term.buffer.active;
+      const canReview=event.deltaY<0&&needsReview();
+      const canScroll=event.deltaY<0?viewportY>0:viewportY<baseY;
+      if(!canReview&&!canScroll&&options.nativePan?.(event)&&!event.shiftKey){event.stopPropagation();return;}
       stop(event);
-      if(alternate()){
-        if(event.deltaY<0)options.openHistory();
+      if(canReview){
+        options.openHistory();
         return;
       }
+      if(term.buffer.active.type==='alternate')return;
       const lineHeight=Math.max(1,options.lineHeight());
       const delta=event.deltaMode===1?event.deltaY:event.deltaMode===2?event.deltaY*term.rows:event.deltaY/lineHeight;
       remainder+=delta;
       const lines=Math.trunc(remainder);
-      if(lines){term.scrollLines(lines);remainder-=lines;options.changed();}
+      if(lines){scrollLocal(term,lines);remainder-=lines;options.changed();}
     };
     const key=event=>{
       if(event.type!=='keydown'||!event.shiftKey||event.ctrlKey||event.metaKey||event.altKey)return false;
       if(!['PageUp','PageDown','Home','End'].includes(event.key))return false;
       stop(event);
       if(event.key==='End'){options.live();return true;}
-      if(alternate()){if(event.key!=='PageDown')options.openHistory();return true;}
-      if(event.key==='Home')term.scrollToTop();
-      else term.scrollPages(event.key==='PageUp'?-1:1);
+      if(event.key!=='PageDown'&&needsReview()){options.openHistory();return true;}
+      const lines=event.key==='Home'?-term.buffer.active.viewportY:
+        (term.rows-1)*(event.key==='PageUp'?-1:1);
+      scrollLocal(term,lines);
       options.changed();return true;
     };
     element.addEventListener('wheel',wheel,{capture:true,passive:false});
     const subscription=term.onScroll(options.changed);
     return {key,dispose(){element.removeEventListener('wheel',wheel,true);subscription.dispose();}};
   }
-  root.TerminalView={resolveTheme,palette,installScreenHistory,history,installScroll};
+  root.TerminalView={resolveTheme,palette,installScreenHistory,history,installScroll,scrollLocal};
 })(typeof window==='undefined'?globalThis:window);
