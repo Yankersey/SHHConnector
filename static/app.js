@@ -1,11 +1,10 @@
 'use strict';
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-let token = new URLSearchParams(location.hash.slice(1)).get('token') || sessionStorage.getItem('sd-token') || localStorage.getItem('sd-access-token');
+const token = new URLSearchParams(location.hash.slice(1)).get('token') || sessionStorage.getItem('sd-token');
 if (token) sessionStorage.setItem('sd-token', token);
 history.replaceState(null, '', location.pathname);
 const windows = new Map();
-let mobile=null,remoteClient=false,mobileTimer=null,mobileBusy=false;
 const systemTheme=window.matchMedia('(prefers-color-scheme: dark)');
 let themePreference=localStorage.getItem('sd-theme')||'auto';
 if(!['auto','light','dark'].includes(themePreference))themePreference='auto';
@@ -42,7 +41,6 @@ async function ensureConnection(profile,requested){
   absorb(await api('/api/connect',{profile_id:profile.id,forwarding:policy}));return policy;
 }
 async function switchProfile(profile){
-  mobile?.closeMenu();
   const changed=selectedProfile!==profile.id;
   selectedProfile=profile.id;sessionStorage.setItem('sd-profile',profile.id);
   if(changed){filePage=null;fileProfile=null;$('#remote-path').value='';$('#file-list').replaceChildren(el('p','sidebar-placeholder','点击 → 读取当前层。'));$('#next-file-page').hidden=true;$('#file-page-label').textContent='按需读取';}
@@ -67,7 +65,7 @@ async function api(path, data) {
   if (data !== undefined) Object.assign(options, {method:'POST', body:JSON.stringify(data), headers:{...options.headers, 'Content-Type':'application/json'}});
   const response = await fetch(path, options);
   const result = await response.json();
-  if (!response.ok) {const error=new Error(result.error || '操作失败');error.status=response.status;throw error;}
+  if (!response.ok) throw new Error(result.error || '操作失败');
   return result;
 }
 function errorIn(dialog, error) { $('.form-error', dialog).textContent = error.message || error; }
@@ -158,7 +156,6 @@ function renderSidebar() {
   $('#workspace-summary').textContent=currentWindows().length ? currentWindows().length+' 个窗口 · '+connected+' 个连接' : '尚未打开窗口';
   $('#empty-state').hidden=currentWindows().length>0;
   const profile=profiles.find(p=>p.id===selectedProfile);$('#connection-label').textContent=profile?profile.name+' · '+profile.host:'终端工作台';$('#connection-state').textContent=connections.has(selectedProfile)?'连接保留':'未连接';$('#close-server').disabled=!profile;$('#scan-screens').disabled=!profile;
-  mobile?.render(currentWindows(),selectedWindow);
 }
 
 function openServer(profile = null) {
@@ -216,20 +213,7 @@ function saveLayout(win) {
 }
 function fit(win) {
   if(!win.element.isConnected||win.element.hidden||win.record.profile_id!==selectedProfile) return;
-  if(mobile?.isMobile()&&!win.element.classList.contains('mobile-active'))return;
-  if(win.ws&&win.ws.readyState<2&&!win.canControl){sizeReader(win);return;}
-  win.term.element.style.width='';win.term.element.style.height='';
-  try {
-    if(win.ws?.readyState===WebSocket.OPEN){
-      const size=win.fit.proposeDimensions();
-      // The server orders geometry changes with terminal output for every viewer.
-      if(size)send(win,{type:'resize',cols:Math.min(size.cols,1000),rows:Math.min(size.rows,500)});
-    }else win.fit.fit();
-  }catch(_){}
-}
-function sizeReader(win){
-  if(win.canControl||!win.element.isConnected)return;
-  requestAnimationFrame(()=>{if(win.canControl||!win.element.isConnected)return;const screen=$('.xterm-screen',win.element),style=getComputedStyle(win.term.element);if(screen?.offsetWidth){win.term.element.style.width=(screen.offsetWidth+parseFloat(style.paddingLeft)+parseFloat(style.paddingRight))+'px';win.term.element.style.height=(screen.offsetHeight+parseFloat(style.paddingTop)+parseFloat(style.paddingBottom))+'px';}});
+  try { win.fit.fit(); send(win,{type:'resize',cols:win.term.cols,rows:win.term.rows}); } catch(_){}
 }
 function applyGeometry(win, geometry, persist=true) {
   win.geometry={x:Math.max(0,Math.round(geometry.x)),y:Math.max(0,Math.round(geometry.y)),width:Math.max(380,Math.round(geometry.width)),height:Math.max(220,Math.round(geometry.height))};
@@ -238,12 +222,12 @@ function applyGeometry(win, geometry, persist=true) {
 }
 function updateCanvas() {
   let width=$('#viewport').clientWidth,height=$('#viewport').clientHeight;
-  if(!mobile?.isMobile())for(const win of currentWindows()){width=Math.max(width,win.geometry.x+win.geometry.width+18);height=Math.max(height,win.geometry.y+win.geometry.height+18);}
+  for(const win of currentWindows()){width=Math.max(width,win.geometry.x+win.geometry.width+18);height=Math.max(height,win.geometry.y+win.geometry.height+18);}
   Object.assign($('#canvas').style,{width:width+'px',height:height+'px'});
 }
 function focusWindow(win, scroll=false, focusTerm=true) {
   selectedWindow=win.record.id;windows.forEach(w=>w.element.classList.toggle('focused',w===win));win.element.style.zIndex=++zIndex;
-  renderSidebar();if(scroll&&!mobile?.isMobile())win.element.scrollIntoView({block:'nearest',inline:'nearest'});if(focusTerm)win.term.focus();fit(win);
+  renderSidebar();if(scroll)win.element.scrollIntoView({block:'nearest',inline:'nearest'});if(focusTerm)win.term.focus();
 }
 function setState(win, state, ref) {
   win.record.state=state;if(ref){win.record.screen_ref=ref;win.record.ever_ready=true;}
@@ -252,7 +236,6 @@ function setState(win, state, ref) {
   win.reconnect.hidden=state==='connected' || state==='connecting' || state==='ended';renderSidebar();
 }
 async function openSession(record, shouldConnect) {
-  mobile?.closeMenu();
   let win=windows.get(record.id);
   if(!win){
     const element=el('article','terminal-window');element.setAttribute('aria-label',record.name+' 终端窗口');
@@ -263,28 +246,21 @@ async function openSession(record, shouldConnect) {
     for(const [value,text] of [['0','转发:关'],['1','转发:开']]){const option=el('option','',text);option.value=value;forwarding.append(option);}forwarding.value=record.forwarding?'1':'0';
     const mouse=el('button','mouse-button'),diagnose=el('button','diagnose-button','诊断');diagnose.title='只检查当前 screen，不结束任务';
     const fontMinus=el('button','font-button','A−'),fontPlus=el('button','font-button','A＋'),maximize=el('button','','□'),close=el('button','window-close','×');
-    maximize.classList.add('window-maximize');
     fontMinus.title='缩小字号';fontPlus.title='增大字号';maximize.title='最大化 / 还原';close.title='分离或结束 screen';
     actions.append(forwarding,mouse,diagnose,fontMinus,fontPlus,maximize,close);header.append(actions);
     const content=el('div','terminal-content'),footer=el('div','window-footer');
     const dot=el('i','state-dot'),stateLabel=el('span'),reconnect=el('button','window-reconnect','重新连接'),refLabel=el('span','remote-ref');
     const review=el('button','window-review','回看'),live=el('button','window-live','回到底部');review.title='回看本窗口已收到的内容；滚轮 / Shift+PageUp 翻页';live.hidden=true;
-    const roleLabel=el('span','sharing-role','未连接'),control=el('button','window-control','接管操作');control.disabled=true;
-    footer.append(dot,stateLabel,reconnect,roleLabel,control,review,live,refLabel);element.append(header,content,footer);$('#canvas').append(element);
+    footer.append(dot,stateLabel,reconnect,review,live,refLabel);element.append(header,content,footer);$('#canvas').append(element);
     const term=new Terminal({fontFamily:'Menlo, Monaco, "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:record.layout?.fontSize || 13,lineHeight:1.18,cursorBlink:true,scrollback:20000,convertEol:false,minimumContrastRatio:4.5,theme:TerminalView.palette(currentTheme())});
-    const addon=new FitAddon.FitAddon(),serializer=new SerializeAddon.SerializeAddon();term.loadAddon(addon);term.loadAddon(serializer);term.open(content);term.options.disableStdin=true;
-    const input=$('.xterm-helper-textarea',content);if(input){input.setAttribute('autocapitalize','none');input.setAttribute('autocorrect','off');input.spellcheck=false;input.readOnly=true;}
+    const addon=new FitAddon.FitAddon();term.loadAddon(addon);term.open(content);
     const remoteMouse=localStorage.getItem('sd-remote-mouse:'+record.id)==='1';
     const historyView=el('div','terminal-history');historyView.hidden=true;historyView.tabIndex=0;historyView.setAttribute('aria-label',record.name+' 历史回看');
     const historyHeading=el('div','history-heading'),historyTitle=el('span','','本窗口历史 · 只读'),historyRefresh=el('button','','刷新'),historyClose=el('button','','返回终端');historyHeading.append(historyTitle,historyRefresh,historyClose);
     historyTitle.title='保留本窗口已收到的内容；服务器更早的记录可按 Ctrl+A，再按 [ 回看。';
     const historyScroll=el('div','history-scroll'),historyText=el('pre');historyScroll.append(historyText);historyView.append(historyHeading,historyScroll);content.append(historyView);
-    win={record,element,term,serializer,fit:addon,dot,stateLabel,reconnect,refLabel,roleLabel,control,canControl:false,viewId:null,viewerCount:0,ws:null,geometry:{},maximized:false,forwarding,mouse,remoteMouse,mouseFilter:new TerminalMouseFilter(remoteMouse,{keepScrollback:true}),decoder:new TextDecoder(),live,historyView,historyText,historyScroll,historyRefresh,historyArchive:'',hasOutput:false,historyLoading:false,historySerial:0};windows.set(record.id,win);
-    control.onclick=()=>send(win,{type:'control',release:win.canControl});
-    win.scroller=TerminalView.installScroll(term,content,{nativePan:event=>{
-      if(win.canControl||win.ws?.readyState!==WebSocket.OPEN)return false;
-      return event.deltaY<0?content.scrollTop>0:content.scrollTop+content.clientHeight<content.scrollHeight-1;
-    },remoteMouse:()=>win.canControl&&win.remoteMouse,historyOpen:()=>!historyView.hidden,lineHeight:()=>$('.xterm-screen',content).offsetHeight/(term.rows||24),openHistory:()=>openHistory(win),changed:()=>updateScrollState(win),live:()=>returnLive(win)});
+    win={record,element,term,fit:addon,dot,stateLabel,reconnect,refLabel,ws:null,geometry:{},maximized:false,forwarding,mouse,remoteMouse,mouseFilter:new TerminalMouseFilter(remoteMouse,{keepScrollback:true}),decoder:new TextDecoder(),live,historyView,historyText,historyScroll,historyRefresh,historyArchive:'',hasOutput:false,historyLoading:false,historySerial:0};windows.set(record.id,win);
+    win.scroller=TerminalView.installScroll(term,content,{remoteMouse:()=>win.remoteMouse,historyOpen:()=>!historyView.hidden,lineHeight:()=>content.clientHeight/(term.rows||24),openHistory:()=>openHistory(win),changed:()=>updateScrollState(win),live:()=>returnLive(win)});
     review.onclick=()=>openHistory(win);
     live.onclick=()=>returnLive(win);historyClose.onclick=()=>returnLive(win);historyRefresh.onclick=()=>openHistory(win,true);
     historyView.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();returnLive(win);}});
@@ -311,25 +287,13 @@ async function openSession(record, shouldConnect) {
     term.writeln('\x1b[38;5;242m点击“重新连接”恢复远程 screen。\x1b[0m\r\n');
     saveLayout(win);
   }
-  focusWindow(win,true,!mobile?.isMobile());
+  focusWindow(win,true);
   if(shouldConnect && (!win.ws || win.ws.readyState>1)) await reconnectWindow(win);
   return win;
 }
-function send(win,data) {if(['input','resize'].includes(data.type)&&!win.canControl)return;if(win.ws?.readyState===WebSocket.OPEN)win.ws.send(JSON.stringify(data));}
-function applySharing(win,data,replaying=false){
-  const owned=!!data.control&&!replaying,changed=win.canControl!==owned;win.canControl=owned;win.viewId=data.view_id;win.viewerCount=data.viewers;
-  win.term.options.disableStdin=!owned;win.element.classList.toggle('view-only',!owned);
-  $('.xterm-helper-textarea',win.element).readOnly=!owned;
-  win.roleLabel.textContent=replaying?'同步中':owned?'操作中 · '+data.viewers+' 端':data.controller==='无人'?'只读 · 无人操作':'只读 · '+data.controller+'操作中';
-  win.control.textContent=owned?'交出操作':'接管操作';win.control.disabled=replaying||win.ws?.readyState!==WebSocket.OPEN;
-  win.forwarding.value=data.forwarding?'1':'0';win.record.forwarding=data.forwarding;
-  win.forwarding.disabled=!owned||data.viewers>1;win.forwarding.title=data.viewers>1?'同步观看沿用当前端口转发配置；关闭其他观看页面后可修改':'本窗口端口转发';
-  if(changed&&owned)fit(win);
-  if(!owned)sizeReader(win);
-  mobile?.render(currentWindows(),selectedWindow);
-}
+function send(win,data) {if(win.ws?.readyState===WebSocket.OPEN)win.ws.send(JSON.stringify(data));}
 function updateScrollState(win){win.live.hidden=win.historyView.hidden&&win.term.buffer.active.viewportY>=win.term.buffer.active.baseY;}
-function returnLive(win,focus=true){win.historySerial++;win.historyView.hidden=true;win.term.scrollToBottom();const content=$('.terminal-content',win.element);content.scrollTop=content.scrollHeight;updateScrollState(win);if(focus)win.term.focus();}
+function returnLive(win){win.historySerial++;win.historyView.hidden=true;win.term.scrollToBottom();updateScrollState(win);win.term.focus();}
 async function openHistory(win,refresh=false){
   if(win.historyLoading)return;
   if(!refresh&&!win.historyView.hidden)return;
@@ -346,48 +310,34 @@ async function openHistory(win,refresh=false){
 }
 async function reconnectWindow(win) {
   if(win.ws && win.ws.readyState<2) return;
-  try{const current=await api('/api/sessions/'+win.record.id+'/connection',{});const policy=current.shared?current.forwarding:await ensureConnection(win.record.profile,win.forwarding.value==='1');if(policy===null)return;connectTerminal(win,policy);}catch(error){toast(error.message,true);}
+  try{const policy=await ensureConnection(win.record.profile,win.forwarding.value==='1');if(policy===null)return;connectTerminal(win,policy);}catch(error){toast(error.message,true);}
 }
 async function changeForwarding(win,policy){
   const previous=!!win.record.forwarding,wasConnected=win.ws&&win.ws.readyState<2;win.forwarding.disabled=true;
   try{
-    if(wasConnected){const record=await api('/api/sessions/'+win.record.id+'/close',{action:'detach',view_id:win.viewId});Object.assign(win.record,record);win.ws?.close();setState(win,'detached');}
+    if(wasConnected){const record=await api('/api/sessions/'+win.record.id+'/close',{action:'detach'});Object.assign(win.record,record);win.ws?.close();setState(win,'detached');}
     await api('/api/sessions/'+win.record.id+'/options',{forwarding:policy});win.record.forwarding=policy;saveLayout(win);
     if(wasConnected){await ensureConnection(win.record.profile,policy);connectTerminal(win,policy);}
   }catch(error){win.forwarding.value=previous?'1':'0';toast(error.message,true);}finally{win.forwarding.disabled=false;}
 }
-async function connectTerminal(win,forwarding) {
-  if(win.connectingGuard||(win.ws&&win.ws.readyState<2))return;
-  win.connectingGuard=true;
-  try{
-    const occupied=await api('/api/sessions/'+win.record.id+'/connection',{});
-    if(occupied.shared)forwarding=occupied.forwarding;
-    if(!win.element.isConnected)return;
-    openTransport(win,forwarding);
-  }catch(error){toast(error.message,true);}
-  finally{win.connectingGuard=false;}
-}
-function openTransport(win,forwarding){
-  returnLive(win,!mobile?.isMobile());
+function connectTerminal(win,forwarding) {
+  if(win.ws && win.ws.readyState<2)return;
+  returnLive(win);
   if(win.hasOutput)win.historyArchive=TerminalView.history(win.term,win.historyArchive);
   win.hasOutput=false;win.mouseFilter=new TerminalMouseFilter(win.remoteMouse,{keepScrollback:true});win.decoder=new TextDecoder();win.term.reset();win.term.writeln('\x1b[38;5;109m正在连接 '+win.record.profile.host+' …\x1b[0m\r\n');win.record.forwarding=forwarding;win.forwarding.value=forwarding?'1':'0';
   setState(win,'connecting');
-  win.canControl=false;win.viewId=null;win.term.options.disableStdin=true;win.control.disabled=true;win.roleLabel.textContent='同步中';
-  const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/'+win.record.id+'?cols='+win.term.cols+'&rows='+win.term.rows+'&forwarding='+(forwarding?'1':'0')+'&shared=1',['screen-desk',token]);
+  const socket=new WebSocket('ws://'+location.host+'/ws/'+win.record.id+'?cols='+win.term.cols+'&rows='+win.term.rows+'&forwarding='+(forwarding?'1':'0'),['screen-desk',token]);
   win.ws=socket;socket.binaryType='arraybuffer';let hadOpen=false,heartbeat=null;
-  win.sharing=new TerminalSharing(win.term,win.serializer,{filter:()=>win.mouseFilter,send:message=>{if(win.ws===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify(message));},reset:()=>{win.mouseFilter=new TerminalMouseFilter(win.remoteMouse,{keepScrollback:true});},geometry:()=>{sizeReader(win);updateScrollState(win);},role:(data,replaying)=>{if(win.ws===socket)applySharing(win,data,replaying);}});
-  socket.onopen=()=>{if(win.ws!==socket)return;hadOpen=true;fit(win);if(!mobile?.isMobile())win.term.focus();heartbeat=setInterval(()=>{if(win.ws===socket)send(win,{type:'ping'});},15000);win.heartbeat=heartbeat;};
+  socket.onopen=()=>{if(win.ws!==socket)return;hadOpen=true;fit(win);win.term.focus();heartbeat=setInterval(()=>{if(win.ws===socket)send(win,{type:'ping'});},15000);win.heartbeat=heartbeat;};
   socket.onmessage=event=>{
     if(win.ws!==socket)return;
-    if(event.data instanceof ArrayBuffer){win.hasOutput=true;win.sharing.output(event.data);return;}
+    if(event.data instanceof ArrayBuffer){win.hasOutput=true;const bytes=event.data.byteLength,text=win.mouseFilter.feed(win.decoder.decode(event.data,{stream:true}));win.term.write(text,()=>{if(win.ws===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'ack',bytes}));});return;}
     const data=JSON.parse(event.data);
-    if(win.sharing.message(data))return;
-    if(data.type==='notice')toast(data.message,true);
     if(data.type==='state')setState(win,data.state,data.screen_ref);
     if(data.type==='error')win.term.writeln('\r\n\x1b[31m'+data.message.replace(/[\x00-\x1f\x7f]/g,' ')+'\x1b[0m');
-    if(data.type==='exit') {if(data.state==='ended'){sessions=sessions.filter(record=>record.id!==win.record.id);destroyWindow(win.record.id);renderSidebar();return;}setState(win,data.state);win.term.writeln('\r\n\x1b[38;5;245m连接已断开。远程 screen 不会因掉线被结束；可点击“重新连接”。\x1b[0m');socket.close();}
+    if(data.type==='exit') {setState(win,data.state);win.term.writeln('\r\n\x1b[38;5;245m连接已断开。远程 screen 不会因掉线被结束；可点击“重新连接”。\x1b[0m');socket.close();}
   };
-  socket.onclose=()=>{clearInterval(heartbeat);if(win.ws!==socket)return;win.canControl=false;win.term.options.disableStdin=true;$('.xterm-helper-textarea',win.element).readOnly=true;win.control.disabled=true;win.roleLabel.textContent='未连接';win.forwarding.disabled=false;if(windows.has(win.record.id) && !['ended','detached'].includes(win.record.state))setState(win,'disconnected');if(!hadOpen && !shuttingDown)toast('连接未建立，请刷新页面后重试。',true);};
+  socket.onclose=()=>{clearInterval(heartbeat);if(win.ws!==socket)return;if(windows.has(win.record.id) && !['ended','detached'].includes(win.record.state))setState(win,'disconnected');if(!hadOpen && !shuttingDown)toast('连接未建立。请确认程序仍在运行，并且该窗口未在其他标签中打开。',true);};
   socket.onerror=()=>{};
 }
 function changeFont(win,delta){win.term.options.fontSize=Math.max(10,Math.min(28,win.term.options.fontSize+delta));fit(win);saveLayout(win);}
@@ -397,7 +347,7 @@ function toggleMaximize(win){
   win.element.classList.toggle('maximized',win.maximized);focusWindow(win);
 }
 function startDrag(event,win,direction){
-  if(mobile?.isMobile()||event.button!==0 || win.maximized)return;event.preventDefault();focusWindow(win);
+  if(event.button!==0 || win.maximized)return;event.preventDefault();focusWindow(win);
   const target=event.currentTarget,startX=event.clientX,startY=event.clientY,start={...win.geometry};
   target.setPointerCapture(event.pointerId);document.body.classList.add('dragging');
   const move=e=>{const dx=e.clientX-startX,dy=e.clientY-startY;let g={...start};
@@ -409,7 +359,7 @@ function startDrag(event,win,direction){
   target.addEventListener('pointermove',move);target.addEventListener('pointerup',end);target.addEventListener('pointercancel',end);
 }
 function destroyWindow(id){const win=windows.get(id);if(!win)return;clearTimeout(win.saveTimer);clearInterval(win.heartbeat);win.historySerial++;win.scroller.dispose();win.ws?.close();win.term.dispose();win.element.remove();windows.delete(id);if(selectedWindow===id)selectedWindow=null;updateCanvas();renderSidebar();}
-async function forgetRecord(id){const win=windows.get(id);if(win)clearTimeout(win.saveTimer);await api('/api/sessions/'+id+'/forget',{view_id:win?.viewId});sessions=sessions.filter(r=>r.id!==id);destroyWindow(id);renderSidebar();}
+async function forgetRecord(id){const win=windows.get(id);if(win)clearTimeout(win.saveTimer);await api('/api/sessions/'+id+'/forget',{});sessions=sessions.filter(r=>r.id!==id);destroyWindow(id);renderSidebar();}
 function renderScreenScan(){
   const list=$('#screen-scan-results');list.replaceChildren();if(!screenScan)return;
   const entries=screenScan.entries,showIgnored=$('#show-ignored-screens').checked;
@@ -461,11 +411,11 @@ $('#verify-sessions').onclick=async()=>{
   let index=0;const worker=async()=>{while(index<tasks.length){const task=tasks[index++];await task();}};
   await Promise.all([worker(),worker()]);
 };
-function openClose(win){closeTarget=win;$('#close-title').textContent='关闭“'+win.record.name+'”';$('#close-description').textContent=win.viewerCount>1?'分离仅关闭这个页面，其他端继续观看。结束 screen 会终止任务并关闭所有观看端。':'请选择服务器上这个 screen 的处理方式。';$('#terminate-button').disabled=!win.record.ever_ready||(win.ws?.readyState===WebSocket.OPEN&&!win.canControl);if($('#forget-button'))$('#forget-button').disabled=win.ws?.readyState===WebSocket.OPEN&&!win.canControl;showDialog($('#close-dialog'));}
+function openClose(win){closeTarget=win;$('#close-title').textContent='关闭“'+win.record.name+'”';$('#close-description').textContent='请选择服务器上这个 screen 的处理方式。';$('#terminate-button').disabled=!win.record.ever_ready;showDialog($('#close-dialog'));}
 async function closeWindow(action){
   const win=closeTarget;if(!win)return;const dialog=$('#close-dialog');$$('.close-choice:not(.local-record-choice)',dialog).forEach(b=>b.disabled=true);clearError(dialog);clearTimeout(win.saveTimer);
-  try{const record=await api('/api/sessions/'+win.record.id+'/close',{action,view_id:win.viewId});Object.assign(win.record,record);destroyWindow(record.id);dialog.close();toast(action==='detach'?'此页面已分离；远程任务继续运行。':'screen 已结束。');}
-  catch(error){errorIn(dialog,error);}finally{$$('#close-dialog .close-choice:not(.local-record-choice)').forEach(b=>b.disabled=false);if(closeTarget===win)$('#terminate-button').disabled=!win.record.ever_ready||(win.ws?.readyState===WebSocket.OPEN&&!win.canControl);}
+  try{const record=await api('/api/sessions/'+win.record.id+'/close',{action});Object.assign(win.record,record);destroyWindow(record.id);dialog.close();toast(action==='detach'?'已分离；远程任务继续运行。':'screen 已结束。');}
+  catch(error){errorIn(dialog,error);}finally{$$('#close-dialog .close-choice:not(.local-record-choice)').forEach(b=>b.disabled=false);if(closeTarget===win)$('#terminate-button').disabled=!win.record.ever_ready;}
 }
 $('#detach-button').onclick=()=>closeWindow('detach');$('#terminate-button').onclick=()=>closeWindow('terminate');
 const localDelete=el('button','close-choice local-record-choice');localDelete.id='forget-button';
@@ -490,7 +440,7 @@ $('#confirm-close-server').onclick=async()=>{
   try{
     const decisions=Object.fromEntries($$('#server-session-choices select').map(select=>[select.dataset.sessionId,select.value]));
     await Promise.all(currentWindows().map(win=>{clearTimeout(win.saveTimer);return api('/api/sessions/'+win.record.id+'/layout',{...win.geometry,fontSize:win.term.options.fontSize,visible:true});}));
-    const data=await api('/api/close-server',{profile_id:profile.id,decisions,view_ids:Object.fromEntries(currentWindows().map(win=>[win.record.id,win.viewId]))});
+    const data=await api('/api/close-server',{profile_id:profile.id,decisions});
     const retained=new Set(data.sessions.map(r=>r.id));
     for(const id of [...windows.keys()])if(!retained.has(id))destroyWindow(id);
     absorb(data);
@@ -518,7 +468,6 @@ $('#confirm-quit').onclick=async()=>{
 function humanSize(size){if(size==null)return '未知大小';if(size<1024)return size+' B';const power=Math.min(4,Math.floor(Math.log(size)/Math.log(1024)));return (size/1024**power).toFixed(1)+' '+['B','KB','MB','GB','TB'][power];}
 function remoteJoin(path,name){return (path==='/'?'':path)+'/'+name;}
 function setFilesOpen(open){
-  if(open)mobile?.closeMenu();
   $('#file-drawer').hidden=!open;$('#toggle-files').setAttribute('aria-expanded',String(open));$('#toggle-files').replaceChildren(el('span','',open?'▾ 文件列表':'▸ 文件列表'),el('span','',open?'折叠':'展开'));localStorage.setItem('sd-files-open',open?'1':'0');updateCanvas();currentWindows().forEach(fit);
 }
 $('#toggle-files').onclick=()=>setFilesOpen($('#file-drawer').hidden);$('#collapse-files').onclick=()=>setFilesOpen(false);
@@ -576,47 +525,17 @@ async function refreshDownloads(){
       if(['paused','cancelled'].includes(job.state))addAction('继续','resume');
       if(job.state==='changed')addAction('保留旧文件并重新下载','restart');
       if(!['completed','cancelled','pausing'].includes(job.state))addAction('取消','cancel');
-      if(remoteClient){
-        if(job.state==='completed'){const download=el('a','secondary-button','保存到手机');download.href='/api/downloads/'+job.id+'/file';download.setAttribute('download',job.name);actions.append(download);}
-      }else addAction('在本机显示','reveal');item.append(actions);list.append(item);
+      addAction('在本机显示','reveal');item.append(actions);list.append(item);
     }
   }catch(_){if(!shuttingDown)$('#app-status').textContent='本机服务未连接；远程 screen 保留';}
 }
 $('#downloads-button').onclick=()=>{showDialog($('#downloads-dialog'));refreshDownloads();};
 
 async function boot(){
-  if(!token){showDialog($('#access-dialog'));return;}
-  try{const data=await api('/api/workspace');remoteClient=data.client_mode==='mobile';document.body.classList.toggle('remote-client',remoteClient);$('.private-label').lastChild.textContent=remoteClient?' 手机远程访问':' 电脑后台';$('#build-version').textContent=data.build?' · '+data.build:'';absorb(data);selectedProfile=profiles.find(p=>p.id===sessionStorage.getItem('sd-profile'))?.id||data.active_profile?.id||profiles[0]?.id||null;
+  try{if(!token)throw new Error('请双击启动器打开 ScreenDesk。');const data=await api('/api/workspace');$('#build-version').textContent=data.build?' · '+data.build:'';absorb(data);selectedProfile=profiles.find(p=>p.id===sessionStorage.getItem('sd-profile'))?.id||data.active_profile?.id||profiles[0]?.id||null;
     // Restore layout without making a connection before the forwarding question.
     for(const record of currentSessions())if(record.layout?.visible)await openSession(record,false);
-    setFilesOpen(!mobile?.isMobile()&&localStorage.getItem('sd-files-open')==='1');renderSidebar();currentWindows().forEach(fit);refreshDownloads();clearInterval(downloadsTimer);downloadsTimer=setInterval(refreshDownloads,1800);pollSSHAuth();clearInterval(authTimer);authTimer=setInterval(pollSSHAuth,500);return true;
-  }catch(error){if(error.status===403){sessionStorage.removeItem('sd-token');localStorage.removeItem('sd-access-token');token=null;showDialog($('#access-dialog'));errorIn($('#access-dialog'),'链接或密钥已失效，请从电脑获取新的手机访问链接。');}else{$('#app-status').textContent=error.message;$('#app-status').classList.add('fatal');toast(error.message,true);}return false;}
+    setFilesOpen(localStorage.getItem('sd-files-open')==='1');renderSidebar();refreshDownloads();downloadsTimer=setInterval(refreshDownloads,1800);pollSSHAuth();authTimer=setInterval(pollSSHAuth,500);
+  }catch(error){$('#app-status').textContent=error.message;$('#app-status').classList.add('fatal');toast(error.message,true);}
 }
-
-function activeMobileWindow(){return currentWindows().find(win=>win.record.id===selectedWindow)||currentWindows()[0];}
-mobile=ScreenDeskMobile.install({
-  select:id=>{const win=windows.get(id);if(win)focusWindow(win,false,false);},newWindow:openNew,
-  key:key=>{const win=activeMobileWindow();if(!win)return;if(key==='Escape'&&!win.historyView.hidden){returnLive(win,false);return;}if(win.ws?.readyState!==WebSocket.OPEN){toast('请先重新连接这个终端。');return;}returnLive(win,false);send(win,{type:'input',data:ScreenDeskMobile.keySequence(key,win.term.modes.applicationCursorKeysMode)});},
-  keyboard:()=>{const win=activeMobileWindow();if(!win)return;const input=$('.xterm-helper-textarea',win.element);if(document.activeElement===input)win.term.blur();else win.term.focus();},
-  resize:()=>{updateCanvas();currentWindows().forEach(fit);}
-});
-$('#access-dialog').addEventListener('cancel',event=>event.preventDefault());
-$('#access-form').onsubmit=async event=>{
-  event.preventDefault();const input=$('#access-key'),value=input.value.trim();let candidate=value;
-  try{if(value.includes('://'))candidate=new URLSearchParams(new URL(value).hash.slice(1)).get('token')||'';}catch(_){}
-  if(!/^[a-f0-9]{64}$/.test(candidate)){errorIn($('#access-dialog'),'请粘贴完整访问链接或 64 位访问密钥。');return;}
-  const button=$('[type=submit]',event.target);button.disabled=true;token=candidate;sessionStorage.setItem('sd-token',token);
-  try{if(await boot()){if($('#access-remember').checked)localStorage.setItem('sd-access-token',token);else localStorage.removeItem('sd-access-token');input.value='';$('#access-dialog').close();}}
-  finally{button.disabled=false;}
-};
-function showMobileAccess(data){
-  $('#mobile-access-status').textContent=data.message;const active=['starting','running','reconnecting'].includes(data.state);
-  $('#mobile-start').hidden=active;$('#mobile-stop').hidden=!active;$('#mobile-copy').hidden=!data.url||data.state==='starting';$('#mobile-access-link').hidden=!data.url||data.state==='starting';$('#mobile-access-link').value=data.url||'';
-}
-async function refreshMobileAccess(){if(!$('#mobile-access-dialog').open||mobileBusy)return;try{showMobileAccess(await api('/api/mobile'));}catch(error){errorIn($('#mobile-access-dialog'),error);}}
-$('#mobile-access').onclick=()=>{showDialog($('#mobile-access-dialog'));refreshMobileAccess();clearInterval(mobileTimer);mobileTimer=setInterval(refreshMobileAccess,1500);};
-$('#mobile-access-dialog').addEventListener('close',()=>clearInterval(mobileTimer));
-async function changeMobileAccess(action){if(mobileBusy)return;mobileBusy=true;$('#mobile-start').disabled=$('#mobile-stop').disabled=true;clearError($('#mobile-access-dialog'));try{showMobileAccess(await api('/api/mobile/'+action,{}));}catch(error){errorIn($('#mobile-access-dialog'),error);}finally{mobileBusy=false;$('#mobile-start').disabled=$('#mobile-stop').disabled=false;}}
-$('#mobile-start').onclick=()=>changeMobileAccess('start');$('#mobile-stop').onclick=()=>changeMobileAccess('stop');
-$('#mobile-copy').onclick=async()=>{try{await navigator.clipboard.writeText($('#mobile-access-link').value);toast('完整链接已复制，请只发给自己的手机。');}catch(_){$('#mobile-access-link').focus();$('#mobile-access-link').select();toast('请长按或使用复制快捷键复制完整链接。');}};
 boot();
