@@ -6,11 +6,13 @@
 
 1. 安装 Windows Python 3.9–3.13（推荐 3.12 / 3.13），确保 PowerShell 中 `python --version` 可用。Windows 需支持 ConPTY（Windows 10 1809+ / Windows 11）。
 2. 确认 `ssh -V` 可用。优先使用 Windows 自带的 OpenSSH Client，无需 SSH Server。
-3. 在项目文件夹双击 **setup-windows.cmd**。它会创建本项目的 `.venv` 并安装 `requirements-windows.txt` 中的 pywinpty，然后启动程序。不需要管理员权限。
-4. 双击一次 **install-windows-shortcuts.cmd**，给当前用户创建带图标的桌面和开始菜单入口。
-5. 以后从桌面或开始菜单打开 **ScreenDesk**。程序会检查 Git 更新并打开 Windows 默认浏览器；退出请使用工作台里的“退出程序”。
+3. 在项目文件夹双击 **setup-windows.cmd**。它会创建本项目的 `.venv`，安装 pywinpty 和 pywebview，生成桌面和开始菜单入口，然后打开独立窗口。不需要管理员权限。窗口使用 Microsoft Edge WebView2 Runtime（Windows 11 通常已安装；缺少时需先安装微软的 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)）。
+4. 以后从桌面或开始菜单打开 **ScreenDesk**。入口指向本机生成的 `data/desktop/ScreenDesk.exe`，使用 `pythonw.exe` 和隐藏的 Python 后台；没有命令行、启动日志或浏览器标签页。只有安装依赖时显示安装窗口。
+5. 关闭窗口后，后台的连接与下载继续运行；再次打开图标会回到已有工作台，重复双击不会重复启动窗口。完整退出请使用工作台里的“退出程序”，后台退出后桌面窗口也会关闭。下次打开时检查 Git 更新。
 
-已在用 ScreenDesk 的电脑，更新项目后可直接执行第 4 步。移动项目文件夹后，从新位置再运行一次快捷方式安装脚本。也可在项目文件夹中双击 **start-windows.cmd**。
+已在用 ScreenDesk 的电脑，更新后运行一次 **setup-windows.cmd** 即可补齐桌面依赖和更新旧快捷方式。只需重新创建快捷方式时运行 **install-windows-shortcuts.cmd**。移动项目文件夹后，从新位置再次运行安装脚本。这个轻量 exe 依赖项目文件夹和 `.venv`，请完整保留；无需打包全部 Python 环境，也不上传本机生成的 exe。macOS 的应用入口保持原有方式。
+
+`start-windows.cmd` 和 `python launcher.py` 保留带控制台 / 默认浏览器的开发入口；日常使用桌面图标。桌面入口沿用同一个后台、Git 更新机制、SSH 配置和数据，打开前已有后台时直接复用。桌面窗口只允许访问当前本机工作台，不允许跳转到外站或本地文件。
 
 也可在项目目录的 PowerShell 中运行：
 
@@ -42,6 +44,6 @@ Windows 的布局与断点保存在项目的 `data/`，文件下载到 `download
 
 ## 验证范围
 
-Windows 自动测试覆盖 ConPTY 中文输入输出与大小调整、原生 HTTP 启动、令牌检查、单实例锁、下载管道超时 / 暂停、共享转发连接、SSH Include 路径和 Git 更新保护。Windows、macOS、Ubuntu 均使用真实系统 OpenSSH 验证密码 / MFA 和 SFTP；额外检查取消、错误密码、认证超时、来源鉴权和主机密钥变更拒绝，不访问用户真实服务器。
+Windows 自动测试覆盖 GUI exe / 桌面快捷方式启动、真实 WebView2 渲染和导航限制、后台复用与窗口关闭保留、ConPTY 中文输入输出与大小调整、原生 HTTP 启动、令牌检查、单实例锁、下载管道超时 / 暂停、共享转发连接、SSH Include 路径和 Git 更新保护。Windows、macOS、Ubuntu 均使用真实系统 OpenSSH 验证密码 / MFA 和 SFTP；额外检查取消、错误密码、认证超时、来源鉴权和主机密钥变更拒绝，不访问用户真实服务器。
 
 参考：[Windows OpenSSH 功能范围](https://github.com/PowerShell/Win32-OpenSSH/wiki/Project-Scope)、[pywinpty](https://github.com/andfoy/pywinpty)。
