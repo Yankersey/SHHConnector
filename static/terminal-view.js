@@ -32,6 +32,7 @@
     const stop=event=>{event.preventDefault();event.stopPropagation();};
     const wheel=event=>{
       if(options.historyOpen()||event.ctrlKey||!event.deltaY)return;
+      if(options.nativePan?.(event)&&!event.shiftKey){event.stopPropagation();return;}
       // Remote mouse is an explicit per-window opt-in. Shift always allows local review.
       if(options.remoteMouse()&&!event.shiftKey)return;
       stop(event);

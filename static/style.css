@@ -53,3 +53,8 @@
 /* FitAddon subtracts terminal padding, so keep insets on xterm itself. */
 .terminal-content{padding:0}
 .terminal-content .xterm{padding:8px 4px 3px 9px}
+.sharing-role{font-size:10px;color:var(--terminal-muted);white-space:nowrap}
+.window-control{font-size:10px;padding:3px 7px;border:1px solid var(--terminal-border);background:var(--terminal);color:var(--terminal-foreground);border-radius:4px;white-space:nowrap}
+.terminal-window.view-only .terminal-content{overflow:auto}
+.terminal-window.view-only .xterm-viewport{pointer-events:none}
+.terminal-window.view-only .window-control{border-color:#72a998;color:var(--teal)}

@@ -29,6 +29,8 @@ jobs:
         run: |
           node tests/test_mouse.mjs
           node tests/test_terminal_view.mjs
+          node tests/test_mobile.mjs
+          node tests/test_sharing.mjs
   macos:
     runs-on: macos-26-intel
     steps:
@@ -46,6 +48,8 @@ jobs:
         run: |
           node tests/test_mouse.mjs
           node tests/test_terminal_view.mjs
+          node tests/test_mobile.mjs
+          node tests/test_sharing.mjs
   windows:
     runs-on: windows-latest
     strategy:
@@ -67,3 +71,5 @@ jobs:
         run: |
           node tests/test_mouse.mjs
           node tests/test_terminal_view.mjs
+          node tests/test_mobile.mjs
+          node tests/test_sharing.mjs
