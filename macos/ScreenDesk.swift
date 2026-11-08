@@ -65,6 +65,14 @@ private final class ScreenDeskApp: NSObject, NSApplicationDelegate, NSWindowDele
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showWindow()
+        if let browser, let workspace {
+            Task {
+                let available = await isAvailable(workspace)
+                if !available && browser === self.browser {
+                    connect()
+                }
+            }
+        }
         return true
     }
 
@@ -131,8 +139,8 @@ private final class ScreenDeskApp: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     private func connect() {
-        showStatus("正在打开 ScreenDesk 工作台…")
         guard !connecting else { return }
+        showStatus("正在打开 ScreenDesk 工作台…")
         connecting = true
         Task {
             defer { connecting = false }
@@ -204,9 +212,13 @@ private final class ScreenDeskApp: NSObject, NSApplicationDelegate, NSWindowDele
 
     private func runningWorkspace(_ runtimeFile: URL) async -> LocalWorkspace? {
         guard let candidate = LocalWorkspace(runtimeFile: runtimeFile),
-              let (_, response) = try? await localHTTP.data(for: candidate.checkRequest),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+              await isAvailable(candidate) else { return nil }
         return candidate
+    }
+
+    private func isAvailable(_ candidate: LocalWorkspace) async -> Bool {
+        guard let (_, response) = try? await localHTTP.data(for: candidate.checkRequest) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     private func open(_ workspace: LocalWorkspace) {
