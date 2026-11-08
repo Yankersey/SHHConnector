@@ -260,6 +260,14 @@ class MobileHTTPTests(unittest.TestCase):
         terminal.stopped = True
         self.assertFalse(self.ws.snapshot()["shared"])
 
+    def test_terminal_script_types_do_not_depend_on_windows_file_associations(self):
+        with mock.patch("mimetypes.guess_type", return_value=("text/plain", None)):
+            for path in ("/vendor/xterm.js", "/vendor/addon-unicode11.js", "/sharing.js", "/workspace-sync.js", "/app.js"):
+                status, headers, body = self.request(path)
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["Content-Type"], "application/javascript; charset=utf-8")
+                self.assertTrue(body)
+
     def test_explicit_takeover_requires_current_connection_and_never_quits_screen(self):
         profile = app.clean_profile(dict(host="isolated-test"))
         self.ws.profiles.append(profile)

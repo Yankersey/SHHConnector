@@ -8,7 +8,6 @@ import hmac
 import http.server
 from http.cookies import SimpleCookie, CookieError
 import json
-import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -1099,7 +1098,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path not in assets:
             return self.response(404, dict(error="Not found"))
         file = ROOT / "static" / assets[path]
-        mime = mimetypes.guess_type(str(file))[0] or "application/octet-stream"
+        # These are bundled assets with known formats. Windows registry MIME
+        # associations and concurrent first-use initialization must not decide
+        # whether a terminal script can execute under nosniff.
+        mime = {".html": "text/html", ".js": "application/javascript", ".css": "text/css",
+                ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json"}[file.suffix]
         return self.response(200, file.read_bytes(), mime + "; charset=utf-8")
 
     def download_file(self, identifier):

@@ -294,6 +294,7 @@ async function openSession(record, shouldConnect, focus=true) {
   if(focus)mobile?.closeMenu();
   let win=windows.get(record.id);
   if(!win){
+    if(!globalThis.Unicode11Addon||!globalThis.FitAddon||!globalThis.SerializeAddon)throw new Error('终端组件未加载完整，请关闭后重新打开工作台。');
     const element=el('article','terminal-window');element.setAttribute('aria-label',record.name+' 终端窗口');element.hidden=record.profile_id!==selectedProfile;
     const header=el('div','window-titlebar');
     header.append(el('span','window-symbol','›_'),el('span','window-name',record.name),el('span','window-server',record.profile.name));

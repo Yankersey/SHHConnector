@@ -104,6 +104,12 @@ def main():
         def evaluate(window, expression):
             return window.evaluate_js(expression)
 
+        resources = {desktop.uid: [], phone.uid: []}
+        for window in (desktop, phone):
+            def response_received(response, target=window):
+                resources[target.uid].append((str(response.url).split("#")[0], response.status_code, response.headers))
+            window.events.response_received += response_received
+
         def wait(window, expression, label):
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
@@ -114,7 +120,7 @@ def main():
                     pass
                 time.sleep(.1)
             details = evaluate(window, "({title:document.title,status:document.querySelector('#app-status')?.textContent,toast:document.querySelector('#toast-container')?.textContent,loaded:typeof WorkspaceSync})")
-            raise AssertionError("Timed out: %s %r" % (label, details))
+            raise AssertionError("Timed out: %s %r; resources=%r" % (label, details, resources[window.uid]))
 
         def exercise():
             try:
