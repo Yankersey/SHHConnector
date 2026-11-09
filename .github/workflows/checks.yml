@@ -127,6 +127,11 @@ jobs:
           PYTHONUTF8: '1'
           PYTHONDONTWRITEBYTECODE: '1'
         run: python tests/windows_workspace_sync.py
+      - name: Verify native Windows clipboard keys and context menu
+        env:
+          PYTHONUTF8: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python tests/windows_clipboard.py
       - name: JavaScript mouse protocol tests
         run: |
           node tests/test_mouse.mjs

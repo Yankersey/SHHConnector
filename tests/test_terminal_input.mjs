@@ -69,6 +69,30 @@ const localScroll=context.TerminalView.installScroll(term,{
 localWheel(event('wheel',{deltaY:-4}));
 assert.ok(term.buffer.normal.viewportY<term.buffer.normal.baseY);
 assert.equal(messages.length,0); // looking back never edits the partial draft
+
+// The Windows app must leave paste to the browser instead of sending SYN.
+let copied=0,prevented=0,selected=true;
+const clipboardTerm={hasSelection:()=>selected};
+const clipboardOptions={windows:true,copy:()=>copied++};
+const clipboardEvent=(key,extra={})=>event('keydown',{
+  key:key.toLowerCase(),code:'Key'+key,keyCode:key.charCodeAt(0),ctrlKey:true,
+  preventDefault(){prevented++;},...extra
+});
+assert.equal(context.TerminalInput.clipboardKey(clipboardTerm,clipboardEvent('C'),clipboardOptions),false);
+assert.equal(copied,1);assert.equal(prevented,1);
+selected=false;
+assert.equal(context.TerminalInput.clipboardKey(clipboardTerm,clipboardEvent('C'),clipboardOptions),true);
+assert.equal(core._keyboardService.evaluateKeyDown(clipboardEvent('C')).key,'\x03');
+assert.equal(context.TerminalInput.clipboardKey(clipboardTerm,clipboardEvent('V'),clipboardOptions),false);
+assert.equal(prevented,1); // the native browser paste action is not cancelled
+assert.equal(context.TerminalInput.clipboardKey(clipboardTerm,clipboardEvent('V',{shiftKey:true}),clipboardOptions),false);
+assert.equal(context.TerminalInput.clipboardKey(clipboardTerm,clipboardEvent('C',{shiftKey:true}),clipboardOptions),false);
+assert.equal(copied,2);
+assert.equal(context.TerminalInput.clipboardKey(clipboardTerm,clipboardEvent('V',{altKey:true}),clipboardOptions),true);
+selected=true;
+assert.equal(context.TerminalInput.clipboardKey(clipboardTerm,clipboardEvent('C'),{windows:false,copy:()=>copied++}),true);
+assert.equal(context.TerminalInput.clipboardKey(clipboardTerm,clipboardEvent('C',{type:'keyup'}),clipboardOptions),false);
+assert.equal(copied,2); // a key release never copies again
 assert.equal(localScroll.key(event('keydown',{key:'ArrowLeft',shiftKey:true})),false);
 localScroll.dispose();
 

@@ -116,10 +116,18 @@ def secure_webview(window, origin):
     def new_window(sender, args):
         args.Handled = True
 
+    def context_menu(sender, args):
+        editing = {"undo", "redo", "cut", "copy", "paste", "pasteAndMatchStyle", "selectAll"}
+        for index in range(args.MenuItems.Count - 1, -1, -1):
+            if str(args.MenuItems[index].Name) not in editing:
+                args.MenuItems.RemoveAt(index)
+
     def configure(core):
         core.WebResourceRequested += resource
         core.NewWindowRequested -= window.native.browser.on_new_window_request
         core.NewWindowRequested += new_window
+        core.Settings.AreDefaultContextMenusEnabled = True
+        core.ContextMenuRequested += context_menu
 
     def initialized(sender, args):
         if args.IsSuccess:

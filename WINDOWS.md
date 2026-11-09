@@ -36,6 +36,10 @@ Windows OpenSSH 不支持 ControlMaster，因此普通终端各自建立 SSH 连
 
 SSH 是否经过代理由现有 SSH 配置和网络路由决定。Windows 的 HTTP/HTTPS 系统代理不会自动代理 SSH TCP 流量；已有的反代地址、ProxyCommand 或 TUN 路由继续按系统 SSH 的行为工作。程序不更改任何代理设置。可先在 Windows PowerShell 用 `ssh 你的Host别名` 验证原来的连接。
 
+## 复制与粘贴
+
+终端中选中文字后，**Ctrl+C** 复制；未选中文字时，Ctrl+C 仍会发送中断。**Ctrl+V** 粘贴，Ctrl+Shift+C / Ctrl+Shift+V 也可使用。右键菜单提供复制、粘贴等文字编辑操作；终端内启用了鼠标的 vim 等程序中，可按住 Shift 拖动选择本地文字。复制在只读观看端也可使用，粘贴需要当前端持有操作权。粘贴沿用 xterm 的 bracketed paste，不会额外发送回车。
+
 ## 数据和双机同步
 
 Windows 的布局与断点保存在项目的 `data/`，文件下载到 `downloads/`；“在本机显示”打开 Windows 文件资源管理器。两台电脑各自保留 SSH 配置、密钥、布局和下载数据，只通过 Git 同步代码。

@@ -348,8 +348,10 @@ async function openSession(record, shouldConnect, focus=true) {
     reconnect.onclick=()=>reconnectWindow(win);
     term.attachCustomKeyEventHandler(event=>{
       if(win.scroller.key(event))return false;
-      if(event.type==='keydown' && event.ctrlKey && event.shiftKey && event.code==='KeyC') {navigator.clipboard?.writeText(term.getSelection()).catch(()=>{});return false;}
-      return true;
+      return TerminalInput.clipboardKey(term,event,{
+        windows:/^Win/i.test(navigator.userAgentData?.platform||navigator.platform||''),
+        copy:()=>copyTerminalSelection(win)
+      });
     });
     setState(win,record.state==='connected'?'disconnected':record.state);
     term.writeln('\x1b[38;5;109mScreenDesk · '+record.name.replace(/[\x00-\x1f\x7f]/g,'')+'\x1b[0m');
@@ -361,6 +363,16 @@ async function openSession(record, shouldConnect, focus=true) {
   return win;
 }
 function send(win,data) {if(['input','resize'].includes(data.type)&&!win.canControl)return;if(win.ws?.readyState===WebSocket.OPEN)win.ws.send(JSON.stringify(data));}
+function copyTerminalSelection(win){
+  const text=win.term.getSelection();
+  if(!text){toast('请先选择要复制的终端内容。');return;}
+  win.term.focus();
+  // xterm's copy handler writes its canvas selection into the native copy
+  // event. This stays within the user's key gesture and also works readonly.
+  try{if(document.execCommand('copy'))return;}catch(_){/* Use the clipboard API fallback below. */}
+  if(navigator.clipboard?.writeText)navigator.clipboard.writeText(text).catch(()=>toast('复制未完成，请在选区上右键选择“复制”。',true));
+  else toast('复制未完成，请在选区上右键选择“复制”。',true);
+}
 function applySharing(win,data,replaying=false){
   const owned=!!data.control&&!replaying,changed=win.canControl!==owned;win.canControl=owned;win.viewId=data.view_id;win.viewerCount=data.viewers;
   win.term.options.disableStdin=!owned;win.element.classList.toggle('view-only',!owned);
