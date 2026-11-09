@@ -23,6 +23,34 @@
 .window-symbol{color:var(--teal)}
 .terminal-content{position:relative;background:var(--terminal);border-radius:0 0 7px 7px}
 .terminal-content .xterm{--vscode-scrollbarSliderBackground:var(--terminal-muted)}
+.terminal-content .xterm:not(.allow-transparency) .xterm-viewport {
+  background-color: var(--terminal);
+}
+.window-actions .window-maximize {
+  position: relative;
+}
+.window-maximize::before,
+.maximized .window-maximize::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+  transform: translate(-50%, -50%);
+}
+.maximized .window-maximize::before {
+  transform: translate(-3px, -7px);
+}
+.maximized .window-maximize::after {
+  background: var(--terminal-bar);
+  transform: translate(-7px, -3px);
+}
+.maximized .window-maximize:hover::after {
+  background: var(--terminal-hover);
+}
 .window-review,.window-live{border:1px solid var(--terminal-border);background:var(--terminal);color:var(--terminal-muted);font-size:9px;border-radius:3px;padding:2px 6px;flex:none}
 .window-review:hover,.window-live:hover{background:var(--terminal-hover);color:var(--terminal-foreground)}
 .terminal-history{position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;background:var(--terminal);color:var(--terminal-foreground);outline:none}

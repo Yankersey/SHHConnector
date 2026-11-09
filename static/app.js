@@ -302,9 +302,8 @@ async function openSession(record, shouldConnect, focus=true) {
     const forwarding=el('select','window-forwarding');forwarding.title='本窗口端口转发；更改后仅此窗口分离并重新连接';forwarding.setAttribute('aria-label',record.name+' 端口转发');
     for(const [value,text] of [['0','转发:关'],['1','转发:开']]){const option=el('option','',text);option.value=value;forwarding.append(option);}forwarding.value=record.forwarding?'1':'0';
     const diagnose=el('button','diagnose-button','诊断');diagnose.title='只检查当前 screen，不结束任务';
-    const fontMinus=el('button','font-button','A−'),fontPlus=el('button','font-button','A＋'),maximize=el('button','','□'),close=el('button','window-close','×');
-    maximize.classList.add('window-maximize');
-    fontMinus.title='缩小字号';fontPlus.title='增大字号';maximize.title='最大化 / 还原';close.title='分离或结束 screen';
+    const fontMinus=el('button','font-button','A−'),fontPlus=el('button','font-button','A＋'),maximize=el('button','window-maximize'),close=el('button','window-close','×');
+    fontMinus.title='缩小字号';fontPlus.title='增大字号';close.title='分离或结束 screen';
     actions.append(forwarding,diagnose,fontMinus,fontPlus,maximize,close);header.append(actions);
     const content=el('div','terminal-content'),footer=el('div','window-footer');
     const dot=el('i','state-dot'),stateLabel=el('span'),reconnect=el('button','window-reconnect','重新连接'),refLabel=el('span','remote-ref');
@@ -324,6 +323,8 @@ async function openSession(record, shouldConnect, focus=true) {
     TerminalView.installScreenHistory(term,end=>{
       if(win.hasOutput&&end)win.historyArchive=TerminalView.history(term,win.historyArchive,end);
     });
+    win.maximizeButton=maximize;
+    setMaximized(win,false);
     win.inputGate=ScreenDeskMobile.bindInput(input,()=>mobile.render(currentWindows(),selectedWindow));
     win.inputGate.refresh(false,mobile.manualInput());
     control.onclick=()=>send(win,{type:'control',release:win.canControl});
@@ -438,10 +439,17 @@ function openTransport(win,forwarding,observeOnly=false){
   socket.onerror=()=>{};
 }
 function changeFont(win,delta){win.term.options.fontSize=Math.max(10,Math.min(28,win.term.options.fontSize+delta));fit(win);saveLayout(win);}
+function setMaximized(win,maximized){
+  win.maximized=maximized;
+  win.element.classList.toggle('maximized',maximized);
+  const label=maximized?'还原窗口':'最大化窗口';
+  win.maximizeButton.title=label;
+  win.maximizeButton.setAttribute('aria-label',label);
+}
 function toggleMaximize(win){
-  if(!win.maximized){win.restoreGeometry={...win.geometry};win.maximized=true;applyGeometry(win,{x:$('#viewport').scrollLeft+10,y:$('#viewport').scrollTop+10,width:Math.max(320,$('#viewport').clientWidth-24),height:Math.max(220,$('#viewport').clientHeight-24)},false);}
-  else{win.maximized=false;applyGeometry(win,win.restoreGeometry);}
-  win.element.classList.toggle('maximized',win.maximized);focusWindow(win);
+  if(!win.maximized){win.restoreGeometry={...win.geometry};setMaximized(win,true);applyGeometry(win,{x:$('#viewport').scrollLeft+10,y:$('#viewport').scrollTop+10,width:Math.max(320,$('#viewport').clientWidth-24),height:Math.max(220,$('#viewport').clientHeight-24)},false);}
+  else{setMaximized(win,false);applyGeometry(win,win.restoreGeometry);}
+  focusWindow(win);
 }
 function startDrag(event,win,direction){
   if(mobile?.isMobile()||event.button!==0 || win.maximized)return;event.preventDefault();focusWindow(win);
@@ -550,9 +558,9 @@ $('#confirm-close-server').onclick=async()=>{
 };
 $('#tile-windows').onclick=()=>{
   const all=currentWindows();if(!all.length)return;const columns=Math.max(1,Math.min(all.length,Math.floor($('#viewport').clientWidth/400))),rows=Math.ceil(all.length/columns),width=Math.max(320,Math.floor(($('#viewport').clientWidth-32)/columns)-12),height=Math.max(220,Math.floor(($('#viewport').clientHeight-32)/rows)-12);
-  all.forEach((win,i)=>{win.maximized=false;win.element.classList.remove('maximized');applyGeometry(win,{x:16+(i%columns)*(width+12),y:16+Math.floor(i/columns)*(height+12),width,height});});$('#viewport').scrollTo(0,0);
+  all.forEach((win,i)=>{setMaximized(win,false);applyGeometry(win,{x:16+(i%columns)*(width+12),y:16+Math.floor(i/columns)*(height+12),width,height});});$('#viewport').scrollTo(0,0);
 };
-$('#cascade-windows').onclick=()=>{currentWindows().forEach((win,i)=>{win.maximized=false;win.element.classList.remove('maximized');applyGeometry(win,{x:22+i%10*28,y:20+i%10*28,width:Math.max(360,Math.min(760,$('#viewport').clientWidth-64)),height:Math.max(250,Math.min(470,$('#viewport').clientHeight-64))});});};
+$('#cascade-windows').onclick=()=>{currentWindows().forEach((win,i)=>{setMaximized(win,false);applyGeometry(win,{x:22+i%10*28,y:20+i%10*28,width:Math.max(360,Math.min(760,$('#viewport').clientWidth-64)),height:Math.max(250,Math.min(470,$('#viewport').clientHeight-64))});});};
 window.addEventListener('resize',()=>{updateCanvas();windows.forEach(fit);});
 window.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();if(!$('dialog[open]'))openNew();}});
 $('#workspace-nav').onclick=()=>$('#viewport').scrollTo(0,0);$('.brand').onclick=event=>{event.preventDefault();$('#viewport').scrollTo(0,0);};
