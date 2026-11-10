@@ -1,8 +1,9 @@
-"""Lazy SFTP v3 directory pages and durable, resumable downloads over system SSH.
+"""Lazy SFTP v3 directory pages and resumable transfers over system SSH.
 
 No remote Python, remote shell interpolation, recursive traversal or pip packages.
 """
 import collections
+from contextlib import ExitStack, closing
 import hashlib
 import json
 import os
@@ -30,6 +31,15 @@ class SFTPError(Exception):
 
 class ChangedFile(SFTPError):
     pass
+
+
+class SFTPStatus(SFTPError):
+    def __init__(self, code, message):
+        super().__init__("SFTP 错误 %d：%s" % (code, message))
+        self.code = code
+
+
+BLOCK_SIZE = 1024 * 1024
 
 
 def u32(n):
@@ -206,7 +216,7 @@ class SFTP:
             message = r.string().decode("utf-8", "replace")
             if status == 0 or (eof and status == 1):
                 return kind, identifier, status
-            raise SFTPError("SFTP 错误 %d：%s" % (status, message))
+            raise SFTPStatus(status, message)
         return kind, identifier, r
 
     def call(self, kind, payload, wanted, eof=False):
@@ -251,6 +261,34 @@ class SFTP:
 
     def open(self, path):
         return self.call(3, string(path) + u32(1) + u32(0), 102).string()
+
+    def open_partial(self, path, create):
+        flags = 3 | (8 | 32 if create else 0)
+        attrs = u32(4) + u32(0o600) if create else u32(0)
+        return self.call(3, string(path) + u32(flags) + attrs, 102).string()
+
+    def lstat(self, path):
+        try:
+            return self.call(7, string(path), 105).attrs()
+        except SFTPStatus as exc:
+            if exc.code != 2:
+                raise
+            return None
+
+    def rename(self, source, target):
+        # SFTP v3 RENAME fails when the target already exists.
+        self.call(18, string(source) + string(target), 101)
+
+    def write_block(self, handle, offset, block):
+        requests = set()
+        for start in range(0, len(block), 32768):
+            payload = string(handle) + struct.pack("!Q", offset + start) + string(block[start:start+32768])
+            requests.add(self.request(6, payload))
+        while requests:
+            kind, identifier, status = self.response()
+            if kind != 101 or status != 0 or identifier not in requests:
+                raise SFTPError("SFTP 写入确认无效")
+            requests.remove(identifier)
 
     def fstat(self, handle):
         return self.call(8, string(handle), 105).attrs()
@@ -370,7 +408,15 @@ class TransferManager:
             for job in self.jobs:
                 if job["state"] in ("running", "retrying", "queued", "pausing"):
                     job["state"] = "paused"
-                    job["message"] = "程序已重启，点击继续将核验并从本机已有位置恢复"
+                    job["message"] = "程序已重启，点击继续将核验并从断点恢复"
+                if job["state"] == "staging":
+                    self._discard_upload(job)
+                    job.update(state="cancelled", message="本机文件接收中断，请重新选择文件")
+                if job.get("kind") == "upload" and job["state"] == "completed":
+                    try:
+                        self._discard_upload(job)
+                    except OSError:
+                        pass
                 self._offset(job)
         threading.Thread(target=self._reap, daemon=True).start()
 
@@ -385,6 +431,8 @@ class TransferManager:
         os.replace(str(temporary), str(self.jobs_file))
 
     def _offset(self, job):
+        if job.get("kind") in ("upload", "copy"):
+            return
         path = Path(job["local_path"] if job["state"] == "completed" else job["part_path"])
         job["downloaded"] = path.stat().st_size if path.exists() else 0
 
@@ -451,7 +499,7 @@ class TransferManager:
             if len([j for j in self.jobs if j["state"] not in ("completed", "cancelled")]) >= 32:
                 raise SFTPError("最多保留 32 个未完成下载")
             for job in self.jobs:
-                if job["profile"] == profile and job["remote_path"] == path and job["state"] not in ("completed", "cancelled"):
+                if not job.get("kind") and job["profile"] == profile and job["remote_path"] == path and job["state"] not in ("completed", "cancelled"):
                     return dict(job)
             identifier = uuid.uuid4().hex
             name = posixpath.basename(path)
@@ -467,6 +515,82 @@ class TransferManager:
             self._save()
             self._start(job)
             return dict(job)
+
+    def _outbound_job(self, profile, directory, name, kind, **source):
+        if not isinstance(directory, str) or not directory or len(directory) > 8192 or "\x00" in directory:
+            raise SFTPError("请选择有效的目标目录")
+        if not isinstance(name, str) or name in ("", ".", "..") or "/" in name or "\x00" in name or len(name.encode("utf-8")) > 255:
+            raise SFTPError("文件名无效或过长")
+        if self.closing or sum(j["state"] not in ("completed", "cancelled") for j in self.jobs) >= 32:
+            raise SFTPError("传输队列已满或程序正在退出")
+        return dict(id=uuid.uuid4().hex, kind=kind, profile=dict(profile), name=name,
+                    directory=directory, remote_path=posixpath.join(directory, name),
+                    forwarding=False, state="staging", downloaded=0, total=None,
+                    retries=0, message="正在接收本机文件", **source)
+
+    def create_copy(self, profile, directory, source, path):
+        from jump_transfer import resolve_endpoint
+
+        if not isinstance(path, str) or not path.startswith("/") or len(path) > 8192 or "\x00" in path:
+            raise SFTPError("请选择有效的源文件")
+        jump = next((candidate for candidate in self.workspace.profiles
+                     if candidate["host"].lower() == "lab-jump"), None)
+        if not jump:
+            raise SFTPError("SSH 配置中找不到 lab-jump")
+        source_endpoint = resolve_endpoint(self.workspace, source)
+        target_endpoint = resolve_endpoint(self.workspace, profile)
+        if source_endpoint == target_endpoint:
+            raise SFTPError("两个 SSH 别名指向同一个服务器账号")
+        with self.lock:
+            job = self._outbound_job(profile, directory, posixpath.basename(path), "copy",
+                                     source_profile=dict(source), source_path=path, jump_profile=dict(jump),
+                                     source_endpoint=source_endpoint, target_endpoint=target_endpoint)
+            self.jobs.append(job)
+            self._start(job)
+            return dict(job)
+
+    def _upload_path(self, job):
+        return self.workspace.data_dir / "uploads" / (job["id"] + ".part")
+
+    def _discard_upload(self, job):
+        self._upload_path(job).unlink(missing_ok=True)
+
+    def create_upload(self, profile, directory, name, size, stream):
+        with self.lock:
+            job = self._outbound_job(profile, directory, name, "upload")
+            part = self._upload_path(job)
+            part.parent.mkdir(mode=0o700, exist_ok=True)
+            job.update(total=size, received=0, staged=False)
+            self.jobs.append(job)
+            self._save()
+        try:
+            fd = os.open(str(part), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as output:
+                while job["received"] < size:
+                    if self.closing:
+                        raise SFTPError("程序正在退出")
+                    block = stream.read(min(BLOCK_SIZE, size - job["received"]))
+                    if not block:
+                        raise SFTPError("本机文件接收中断，请重新选择文件")
+                    output.write(block)
+                    with self.lock:
+                        job["received"] += len(block)
+                output.flush()
+                os.fsync(output.fileno())
+            with self.lock:
+                job["staged"] = True
+                if job.pop("pause_after_staging", False):
+                    job.update(state="paused", message="服务器已关闭，点击继续可上传")
+                    self._save()
+                else:
+                    self._start(job)
+                return dict(job)
+        except (SFTPError, OSError):
+            self._discard_upload(job)
+            with self.lock:
+                job.update(state="cancelled", message="本机文件接收中断，请重新选择文件")
+                self._save()
+            raise
 
     def _start(self, job):
         if self.closing:
@@ -485,9 +609,21 @@ class TransferManager:
         with self.lock:
             job = next((j for j in self.jobs if j["id"] == identifier), None)
             if not job:
-                raise SFTPError("找不到下载任务")
+                raise SFTPError("找不到传输任务")
+            outbound = job.get("kind") in ("upload", "copy")
+            if job["state"] == "staging":
+                raise SFTPError("请等待本机文件接收完成")
+            if outbound and action in ("reveal", "restart"):
+                raise SFTPError("此操作只适用于下载")
+            if outbound and action == "resume" and not job.get("staged", True):
+                raise SFTPError("请重新选择本机文件")
+            if outbound and job["state"] == "completed":
+                return dict(job)
             if self.workspace.connections:
                 self.workspace.require_active(job["profile"]["id"], forwarding, job["profile"])
+                if action == "resume" and job.get("source_profile"):
+                    source = job["source_profile"]
+                    self.workspace.require_active(source["id"], profile=source)
             if action == "reveal":
                 path = job["local_path"] if job["state"] == "completed" else job["part_path"]
                 reveal_local(path if Path(path).exists() else str(self.folder))
@@ -503,14 +639,16 @@ class TransferManager:
                 job["message"] = "部分文件已保留"
                 if action == "cancel":
                     job["state"] = "cancelled"
-                    job["message"] = "已取消，部分文件保留在下载文件夹"
+                    job["message"] = "已取消，部分文件和断点已保留" if outbound else "已取消，部分文件保留在下载文件夹"
                 self._save()
             elif action in ("resume", "restart"):
                 if job["state"] == "completed":
                     return dict(job)
                 if action == "resume" and job["state"] == "changed":
+                    if outbound:
+                        raise SFTPError("文件或断点已变化，请检查目标后重新发起传输")
                     raise SFTPError("文件已变化，请选择重新下载；旧的部分文件会保留")
-                if forwarding is not None:
+                if forwarding is not None and not outbound:
                     job["forwarding"] = forwarding
                 if action == "restart":
                     previous = self.workers.get(identifier)
@@ -527,7 +665,7 @@ class TransferManager:
     @staticmethod
     def _metadata(attrs):
         if not stat.S_ISREG(attrs.get("permissions", 0)):
-            raise ChangedFile("只支持下载普通文件（目录不递归打包下载）")
+            raise ChangedFile("只支持传输普通文件")
         if "size" not in attrs or "mtime" not in attrs:
             raise ChangedFile("服务器未提供文件大小或修改时间，无法安全续传")
         return attrs["size"], attrs["mtime"]
@@ -625,28 +763,157 @@ class TransferManager:
                 self.clients.pop(job["id"], None)
             client.close()
 
+    def _attempt_outbound(self, job, stop):
+        with ExitStack() as stack:
+            if job["kind"] == "copy":
+                source = stack.enter_context(closing(SFTP(self.workspace, job["source_profile"], False,
+                                                          stop=stop, purpose="读取互传源文件")))
+                source_handle = source.open(job["source_path"])
+
+                def metadata():
+                    return self._metadata(source.fstat(source_handle))
+
+                def read(offset, size):
+                    return source.read_block(source_handle, offset, size)
+            else:
+                local = stack.enter_context(self._upload_path(job).open("rb"))
+
+                def metadata():
+                    info = os.fstat(local.fileno())
+                    return info.st_size, info.st_mtime_ns
+
+                def read(offset, size):
+                    local.seek(offset)
+                    return local.read(size)
+
+            total, mtime = metadata()
+            head = hashlib.sha256(read(0, min(65536, total))).hexdigest()
+            with self.lock:
+                if job.get("head_digest") is None:
+                    if job["total"] is not None and job["total"] != total:
+                        raise ChangedFile("本机上传文件大小已变化")
+                    job.update(total=total, mtime=mtime, head_digest=head)
+                    self._save()
+                elif (total, mtime, head) != (job["total"], job["mtime"], job["head_digest"]):
+                    raise ChangedFile("源文件已变化，请重新发起传输")
+            target = stack.enter_context(closing(SFTP(self.workspace, job["profile"], False,
+                                                      stop=stop, purpose="写入目标服务器")))
+            if "resolved_directory" not in job:
+                directory = target.realpath(job["directory"])
+                with self.lock:
+                    job.update(resolved_directory=directory, remote_path=posixpath.join(directory, job["name"]))
+                    self._save()
+            final = job["remote_path"]
+            part = posixpath.join(job["resolved_directory"], ".screendesk-" + job["id"] + ".part")
+            partial = target.lstat(part)
+            existing = target.lstat(final)
+            if existing is not None:
+                if partial is not None or not job.get("publishing") or not stat.S_ISREG(existing.get("permissions", 0)) or existing.get("size") != total:
+                    raise ChangedFile("目标已有同名文件，请更换目录后重新传输")
+                # The rename may have succeeded before the connection dropped.
+                handle = target.open(final)
+                for offset in range(0, total, BLOCK_SIZE):
+                    size = min(BLOCK_SIZE, total-offset)
+                    if target.read_block(handle, offset, size) != read(offset, size):
+                        raise ChangedFile("目标文件无法与本次传输匹配")
+                if metadata() != (total, mtime):
+                    raise ChangedFile("源文件已变化，请核对目标文件")
+            else:
+                checkpoint = job.get("checkpoint")
+                offset = checkpoint["offset"] + checkpoint["size"] if checkpoint else 0
+                if (partial is None and offset) or (partial is not None and (
+                        not stat.S_ISREG(partial.get("permissions", 0)) or not offset <= partial.get("size", -1) <= total)):
+                    raise ChangedFile("目标断点文件已变化，请重新发起传输")
+                handle = target.open_partial(part, create=partial is None)
+                if checkpoint:
+                    start, size = checkpoint["offset"], checkpoint["size"]
+                    for block in (read(start, size), target.read_block(handle, start, size)):
+                        if hashlib.sha256(block).hexdigest() != checkpoint["sha256"]:
+                            raise ChangedFile("断点校验失败，请重新发起传输")
+                with self.lock:
+                    job.update(state="running", downloaded=offset, message="正在写入目标服务器")
+                    self._save()
+                while offset < total:
+                    size = min(BLOCK_SIZE, total-offset)
+                    block = read(offset, size)
+                    if len(block) != size or metadata() != (total, mtime):
+                        raise ChangedFile("源文件在传输中发生变化")
+                    target.write_block(handle, offset, block)
+                    with self.lock:
+                        job.update(downloaded=offset+size, retries=0,
+                                   checkpoint=dict(offset=offset, size=size, sha256=hashlib.sha256(block).hexdigest()))
+                        self._save()
+                    offset += size
+                if metadata() != (total, mtime) or target.fstat(handle).get("size") != total:
+                    raise ChangedFile("文件大小或修改时间在传输完成前发生变化")
+                target.close_handle(handle)
+                with self.lock:
+                    if stop.is_set():
+                        return
+                    job["publishing"] = True
+                    self._save()
+                if target.lstat(final) is not None:
+                    raise ChangedFile("目标已有同名文件，请更换目录后重新传输")
+                try:
+                    target.rename(part, final)
+                except SFTPStatus:
+                    if target.lstat(final) is not None:
+                        raise ChangedFile("目标已有同名文件，请更换目录后重新传输")
+                    raise
+            with self.lock:
+                job.update(state="completed", downloaded=total, message="传输完成")
+                self._save()
+            if job["kind"] == "upload":
+                try:
+                    self._discard_upload(job)
+                except OSError:
+                    pass
+
     def _run(self, job, stop):
         try:
             while not stop.is_set() and not self.closing:
                 try:
-                    self._attempt(job, stop)
+                    if job.get("kind") == "copy":
+                        from jump_transfer import copy_on_jump
+
+                        def update(progress):
+                            with self.lock:
+                                if not stop.is_set() or progress.get("state") == "completed":
+                                    job.update(progress)
+                                    self._save()
+
+                        copy_on_jump(self.workspace, job, stop, update)
+                    elif job.get("kind") == "upload":
+                        self._attempt_outbound(job, stop)
+                    else:
+                        self._attempt(job, stop)
                     break
                 except ChangedFile as exc:
                     with self.lock:
                         job.update(state="changed", message=str(exc))
+                        if job.get("kind") == "upload":
+                            try:
+                                self._discard_upload(job)
+                                job["staged"] = False
+                            except OSError:
+                                pass
                         self._save()
                     break
                 except AuthError as exc:
-                    if stop.is_set() or self.closing:
+                    if stop.is_set() or self.closing or job["state"] == "completed":
                         break
                     with self.lock:
                         job.update(state="paused", message=str(exc) + "；点击继续可重新认证")
                         self._save()
                     break
                 except (SFTPError, OSError, ValueError) as exc:
-                    if stop.is_set() or self.closing:
+                    if stop.is_set() or self.closing or job["state"] == "completed":
                         break
                     with self.lock:
+                        if job.get("kind") and isinstance(exc, SFTPStatus) and exc.code in (2, 3, 5, 8):
+                            job.update(state="paused", message=str(exc) + "。请检查路径和权限后继续")
+                            self._save()
+                            break
                         job["retries"] += 1
                         delay = min(60, 2 ** min(job["retries"], 6))
                         job.update(state="retrying", message="%d 秒后自动续传：%s" % (delay, str(exc)[-1200:]))
@@ -673,7 +940,12 @@ class TransferManager:
 
     def pause_profile(self, identifier):
         with self.lock:
-            identifiers = [j["id"] for j in self.jobs if j["profile"]["id"] == identifier and
+            for job in self.jobs:
+                if job["state"] == "staging" and job["profile"]["id"] == identifier:
+                    job["pause_after_staging"] = True
+            identifiers = [j["id"] for j in self.jobs if identifier in
+                           (j["profile"]["id"], j.get("source_profile", {}).get("id"),
+                            j.get("jump_profile", {}).get("id")) and
                            j["state"] in ("queued", "running", "retrying", "pausing")]
             cursors = [self.cursors.pop(key) for key, c in list(self.cursors.items()) if c.profile["id"] == identifier]
         for job_id in identifiers:

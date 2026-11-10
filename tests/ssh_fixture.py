@@ -1,6 +1,7 @@
 """Disposable loopback SSH/SFTP server; never reads user SSH configuration."""
 from pathlib import Path
 import logging
+import os
 import re
 import socket
 import threading
@@ -13,7 +14,6 @@ CODE = "123456"
 
 class FileHandle(paramiko.SFTPHandle):
     def stat(self):
-        import os
         return paramiko.SFTPAttributes.from_stat(os.fstat(self.readfile.fileno()))
 
 
@@ -49,15 +49,29 @@ class Files(paramiko.SFTPServerInterface):
     def open(self, path, flags, attr):
         try:
             handle = FileHandle(flags)
-            handle.readfile = self.local(path).open("rb")
+            fd = os.open(self.local(path), flags, attr.st_mode or 0o600)
+            writable = flags & (os.O_WRONLY | os.O_RDWR)
+            handle.readfile = os.fdopen(fd, "r+b" if flags & os.O_RDWR else "wb" if writable else "rb")
+            if writable:
+                handle.writefile = handle.readfile
             return handle
+        except OSError as exc:
+            return paramiko.SFTPServer.convert_errno(exc.errno)
+
+    def rename(self, oldpath, newpath):
+        try:
+            source, target = self.local(oldpath), self.local(newpath)
+            os.link(source, target)
+            source.unlink()
+            return paramiko.SFTP_OK
         except OSError as exc:
             return paramiko.SFTPServer.convert_errno(exc.errno)
 
 
 class SSHFixture:
-    def __init__(self, root, mfa=False):
+    def __init__(self, root, mfa=False, execute=None, files=Files):
         self.root, self.mfa = Path(root), mfa
+        self.execute, self.files = execute, files
         self.key = paramiko.RSAKey.generate(2048)
         self.stop = threading.Event()
         self.transports, self.threads = [], []
@@ -103,6 +117,9 @@ class SSHFixture:
             def check_channel_request(self, kind, channelid):
                 return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
             def check_channel_exec_request(self, channel, command):
+                if fixture.execute:
+                    threading.Thread(target=fixture.execute, args=(channel, command), daemon=True).start()
+                    return True
                 def reply():
                     try:
                         match = re.search(rb"__SD_LIST_([0-9a-f]{32})_BEGIN__", command)
@@ -122,7 +139,7 @@ class SSHFixture:
         logging.getLogger("screendesk.fixture.ssh").setLevel(logging.CRITICAL)
         self.transports.append(transport)
         transport.add_server_key(self.key)
-        transport.set_subsystem_handler("sftp", paramiko.SFTPServer, Files, root=self.root)
+        transport.set_subsystem_handler("sftp", paramiko.SFTPServer, self.files, root=self.root)
         try:
             transport.start_server(server=Server())
             while transport.is_active() and not self.stop.wait(.05):

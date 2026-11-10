@@ -1069,6 +1069,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -1143,7 +1145,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         manager = self.server.workspace.transfers
         with manager.lock:
             job = next((dict(j) for j in manager.jobs if j["id"] == identifier), None)
-        if not job or job["state"] != "completed":
+        if not job or job.get("kind") or job["state"] != "completed":
             return self.response(404, dict(error="文件尚未下载完成"))
         path = Path(job["local_path"])
         try:
@@ -1214,8 +1216,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.response(403, dict(error="请求未获授权"))
         workspace = self.server.workspace
         try:
+            url = urllib.parse.urlsplit(self.path)
+            path = url.path
+            if path == "/api/uploads":
+                self.close_connection = True
+                self.connection.settimeout(30)
+                if self.headers.get("Transfer-Encoding") or self.headers.get_content_type() != "application/octet-stream":
+                    raise UserError("请用文件选择器上传文件")
+                fields = urllib.parse.parse_qs(url.query)
+                if not fields.get("profile_id", [""])[0]:
+                    raise UserError("请选择上传服务器")
+                profile = workspace.require_active(fields.get("profile_id", [""])[0])
+                size = bounded_int(self.headers.get("Content-Length"), 0, 2**53-1, "上传大小")
+                job = workspace.transfers.create_upload(profile, fields.get("directory", [""])[0],
+                                                        fields.get("name", [""])[0], size, self.rfile)
+                return self.response(200, job)
             data = self.read_json()
-            path = urllib.parse.urlsplit(self.path).path
             if path in ("/api/mobile/start", "/api/mobile/stop", "/api/shutdown") and self.auth_kind() != "desktop":
                 return self.response(403, dict(error="此操作仅能在电脑本机完成"))
             if path == "/api/mobile/start":
@@ -1277,6 +1293,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not profile or not isinstance(data.get("forwarding"), bool):
                     raise UserError("请先选择服务器和本次转发方式")
                 return self.response(200, workspace.transfers.create(profile, data.get("path"), data["forwarding"]))
+            if path == "/api/server-copy":
+                source_id, target_id = data.get("source_id"), data.get("target_id")
+                if not all(isinstance(identifier, str) and identifier for identifier in (source_id, target_id)) or source_id == target_id:
+                    raise UserError("请选择两个不同的服务器")
+                source = workspace.require_active(source_id)
+                target = workspace.require_active(target_id)
+                return self.response(200, workspace.transfers.create_copy(
+                    target, data.get("directory"), source, data.get("path")))
             download_match = re.fullmatch(r"/api/downloads/([0-9a-f]{32})/(pause|resume|restart|cancel|reveal)", path)
             if download_match:
                 workspace.require_active()

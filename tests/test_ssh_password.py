@@ -1,17 +1,24 @@
 """Real system OpenSSH against a disposable password-only loopback SSH server."""
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 import json
+import os
 from pathlib import Path
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
+import jump_transfer
 try:
-    from ssh_fixture import CODE, PASSWORD, SSHFixture
+    from ssh_fixture import CODE, PASSWORD, Files, SSHFixture
 except ImportError:
     SSHFixture = None
 
@@ -112,6 +119,120 @@ class PasswordSSHTests(unittest.TestCase):
         self.assertEqual(job["retries"], 0)
         self.assertFalse(self.ws.auth.snapshot())
         self.assertEqual(self.fixture.password_attempts, 0)
+
+    def test_binary_upload_authenticates_and_uses_sftp(self):
+        name = "上传 # 文件.bin"
+        created = self.ws.transfers.create_upload(self.profile, ".", name, len(self.payload), BytesIO(self.payload))
+        job = next(job for job in self.ws.transfers.jobs if job["id"] == created["id"])
+        prompts = self.resolve(lambda: job["state"] in ("completed", "paused", "changed"))
+        self.assertEqual(job["state"], "completed", job["message"])
+        self.assertTrue(any("password" in p["prompt"].lower() for p in prompts))
+        self.assertTrue(any("code" in p["prompt"].lower() for p in prompts))
+        self.assertEqual((self.remote/name).read_bytes(), self.payload)
+
+    @unittest.skipIf(os.name == "nt", "loopback lab-jump fixture requires a POSIX shell")
+    def test_server_copy_runs_on_jump_with_passwords_and_resumes(self):
+        destination = self.root/"target"
+        destination.mkdir()
+        state = self.root/"jump-state"
+        tools = self.root/"jump-bin"
+        tools.mkdir()
+        remote_config = self.root/"jump-ssh-config"
+        remote_config.write_text('Host *\n UserKnownHostsFile "'+str(self.root/"jump-known-hosts")+'"\n'
+                                 ' GlobalKnownHostsFile none\n')
+        ssh = shutil.which(app.SSH)
+        wrapper = tools/"ssh"
+        wrapper.write_text("#!/bin/sh\nexec "+shlex.quote(ssh)+" -F "+shlex.quote(str(remote_config))+' "$@"\n')
+        wrapper.chmod(0o700)
+        written = []
+        dropped = threading.Event()
+
+        class InterruptedFiles(Files):
+            def open(self, path, flags, attr):
+                handle = super().open(path, flags, attr)
+                if not isinstance(handle, int) and handle.writefile:
+                    original = handle.write
+
+                    def write(offset, data):
+                        written.append(offset)
+                        result = original(offset, data)
+                        if offset == 1024*1024 and not dropped.is_set():
+                            dropped.set()
+                            target.transports[-1].close()
+                        return result
+
+                    handle.write = write
+                return handle
+
+        def execute(channel, command):
+            env = dict(os.environ, XDG_CACHE_HOME=str(state),
+                       PATH=str(tools)+os.pathsep+os.environ.get("PATH", os.defpath))
+            process = subprocess.Popen(["/bin/sh", "-c", command.decode()], env=env,
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       bufsize=0)
+
+            def input_loop():
+                try:
+                    for chunk in iter(lambda: channel.recv(32768), b""):
+                        view = memoryview(chunk)
+                        while view:
+                            view = view[os.write(process.stdin.fileno(), view):]
+                except OSError:
+                    pass
+                finally:
+                    process.stdin.close()
+
+            threading.Thread(target=input_loop, daemon=True).start()
+            try:
+                for chunk in iter(lambda: process.stdout.read(32768), b""):
+                    channel.sendall(chunk)
+                channel.send_exit_status(process.wait(timeout=4))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                process.stdout.close()
+                channel.close()
+
+        target = SSHFixture(destination, mfa=True, files=InterruptedFiles)
+        jump = SSHFixture(self.root, execute=execute)
+        self.addCleanup(target.close)
+        self.addCleanup(jump.close)
+        local_config = self.ws.ssh_config
+        for alias, fixture in (("source-host", self.fixture), ("target-host", target), ("lab-jump", jump)):
+            local_config.write_text(local_config.read_text() +
+                                    "\nHost "+alias+"\n HostName 127.0.0.1\n User fixture\n Port "+str(fixture.port)+"\n"+
+                                    (" ProxyJump lab-jump\n" if alias!="lab-jump" else ""))
+        source, dest, jump_profile = [app.clean_profile(dict(host=name)) for name in
+                                      ("source-host", "target-host", "lab-jump")]
+        self.ws.profiles.extend([source, dest, jump_profile])
+        for profile in (source, dest):
+            self.ws.activate(profile["id"], False)
+        control_bytes = 0
+
+        class CountedPipes(jump_transfer.TimedPipes):
+            def read(self, size, deadline, stop=None):
+                nonlocal control_bytes
+                data = super().read(size, deadline, stop)
+                control_bytes += len(data)
+                return data
+
+        with mock.patch.object(jump_transfer, "TimedPipes", CountedPipes):
+            created = self.ws.transfers.create_copy(dest, ".", source, "/payload.bin")
+            job = next(job for job in self.ws.transfers.jobs if job["id"] == created["id"])
+            prompts = self.resolve(lambda: job["state"] in ("completed", "paused", "changed"), timeout=40)
+            self.assertEqual(job["state"], "completed", job["message"])
+            self.assertTrue(dropped.is_set())
+            self.assertEqual(written.count(0), 1)
+            self.assertGreaterEqual(written.count(1024*1024), 2)
+            self.assertEqual((destination/"payload.bin").read_bytes(), self.payload)
+            self.assertLess(control_bytes, 65536)
+            self.assertFalse(list(self.ws.transfers.folder.iterdir()))
+            self.assertTrue({"source-host", "target-host", "lab-jump"}.issubset(
+                {p["server"] for p in prompts if p["kind"] == "secret"}))
+            for saved in state.rglob("*.json"):
+                self.assertNotIn(PASSWORD, saved.read_text())
+                self.assertNotIn(CODE, saved.read_text())
 
     def test_wrong_password_stops_at_paused_instead_of_reprompting_forever(self):
         created = self.ws.transfers.create(self.profile, "/payload.bin", False)

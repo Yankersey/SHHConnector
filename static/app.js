@@ -613,7 +613,15 @@ function renderFiles(){
   function row(item){const e=el('div','file-row');const name=el('button','file-name');name.title=item.name;name.append(el('span','file-icon',item.kind==='directory'?'▸':item.kind==='link'?'↗':'·'),el('span','file-basename',item.name));
     name.onclick=()=>{if(item.unsupported)return toast('此文件名不是 UTF-8，无法安全操作。',true);if(item.kind==='directory'||item.kind==='link')readFiles(false,remoteJoin(filePage.path,item.name));};
     e.append(name);
-    if(item.kind!=='directory'&&!item.unsupported){const down=el('button','file-download','↓');down.title='下载 '+item.name+'（'+humanSize(item.size)+'）';down.onclick=async()=>{try{await api('/api/downloads',{profile_id:fileProfile.id,forwarding:fileForwarding,path:remoteJoin(filePage.path,item.name)});toast('已加入下载任务');refreshDownloads();}catch(error){toast(error.message,true);}};e.append(down);}
+    if(item.kind!=='directory'&&!item.unsupported){const down=el('button','file-download','↓');down.title='下载 '+item.name+'（'+humanSize(item.size)+'）';down.onclick=async()=>{try{await api('/api/downloads',{profile_id:fileProfile.id,forwarding:fileForwarding,path:remoteJoin(filePage.path,item.name)});toast('已加入下载任务');refreshDownloads();}catch(error){toast(error.message,true);}};e.append(down);
+      if(item.kind==='file'){
+        const copy=el('button','file-download','⇢');
+        copy.title='复制 '+item.name+' 到另一台服务器';
+        copy.setAttribute('aria-label',copy.title);
+        copy.onclick=()=>openServerCopy(fileProfile,remoteJoin(filePage.path,item.name));
+        e.append(copy);
+      }
+    }
     return e;
   }
   if(!entries.length)list.append(el('p','sidebar-placeholder','当前目录为空。'));
@@ -624,28 +632,87 @@ function renderFiles(){
 $('#path-form').onsubmit=event=>{event.preventDefault();readFiles();};$('#open-files').onclick=()=>readFiles();$('#refresh-files').onclick=()=>readFiles();$('#next-file-page').onclick=()=>readFiles(true);$('#group-extensions').onchange=renderFiles;
 $('#parent-directory').onclick=()=>{const path=filePage?.path||$('#remote-path').value||'.';readFiles(false,path==='/'?'/':path.slice(0,path.lastIndexOf('/'))||'/');};
 
-const downloadStates={queued:'等待连接',running:'下载中',retrying:'掉线重试中',paused:'已暂停',pausing:'正在暂停',changed:'文件变化 / 需处理',completed:'已完成',cancelled:'已取消'};
+const uploadButton=$('#upload-files'),uploadPicker=$('#upload-picker');
+let uploadDestination=null;
+uploadButton.onclick=()=>{
+  if(!filePage||fileProfile?.id!==selectedProfile){toast('请先打开目标目录。',true);return;}
+  uploadDestination={profile_id:fileProfile.id,directory:filePage.path};
+  uploadPicker.click();
+};
+uploadPicker.onchange=async()=>{
+  const files=[...uploadPicker.files],destination=uploadDestination;
+  uploadPicker.value='';
+  if(!files.length||!destination)return;
+  uploadButton.disabled=true;
+  let queued=0;
+  try{
+    for(const file of files){
+      const query=new URLSearchParams({...destination,name:file.name});
+      const response=await fetch('/api/uploads?'+query,{
+        method:'POST',headers:{'X-ScreenDesk-Token':token,'Content-Type':'application/octet-stream'},body:file
+      });
+      const result=await response.json();
+      if(!response.ok)toast(file.name+'：'+(result.error||'上传未开始'),true);
+      else queued++;
+    }
+    if(queued)toast('已加入 '+queued+' 个上传任务');
+  }catch(error){toast('本机文件接收中断：'+error.message,true);}
+  finally{uploadButton.disabled=false;refreshDownloads();}
+};
+
+const copyDialog=$('#server-copy-dialog'),copyForm=$('#server-copy-form');
+let copySource=null;
+function openServerCopy(profile,path){
+  const targets=profiles.filter(target=>target.id!==profile.id&&target.host.toLowerCase()!=='lab-jump');
+  if(!targets.length){toast('SSH 配置中还没有另一台服务器。',true);return;}
+  copySource={profile,path};
+  const select=copyForm.elements.target;
+  select.replaceChildren(...targets.map(target=>new Option(target.name,target.id)));
+  copyForm.elements.directory.value='.';
+  $('#server-copy-source').textContent=profile.name+' · '+path;
+  showDialog(copyDialog);
+}
+copyForm.onsubmit=async event=>{
+  event.preventDefault();
+  const source=copySource,target=profiles.find(profile=>profile.id===copyForm.elements.target.value);
+  if(!source||!target)return;
+  const button=$('[type=submit]',copyForm);
+  button.disabled=true;clearError(copyDialog);
+  try{
+    if(!connections.has(target.id))await ensureConnection(target,false);
+    await api('/api/server-copy',{source_id:source.profile.id,target_id:target.id,
+      path:source.path,directory:copyForm.elements.directory.value});
+    copyDialog.close();toast('已加入互传任务');refreshDownloads();
+  }catch(error){errorIn(copyDialog,error);}
+  finally{button.disabled=false;}
+};
+
+const downloadStates={staging:'接收本机文件',queued:'等待连接',running:'传输中',retrying:'掉线重试中',paused:'已暂停',pausing:'正在暂停',changed:'需要处理',completed:'已完成',cancelled:'已取消'};
 async function refreshDownloads(){
   if(shuttingDown)return;
   try{const data=await api('/api/downloads');$('#download-folder').textContent=data.folder;
-    data.jobs=data.jobs.filter(j=>j.profile.id===selectedProfile);
+    data.jobs=data.jobs.filter(j=>j.profile.id===selectedProfile||j.source_profile?.id===selectedProfile);
     $('#download-count').textContent=data.jobs.filter(j=>!['completed','cancelled'].includes(j.state)).length;
     if(!$('#downloads-dialog').open)return;
-    const list=$('#download-list');list.replaceChildren();if(!data.jobs.length)list.append(el('p','dialog-description','在左侧文件列表点击 ↓ 开始下载。'));
+    const list=$('#download-list');list.replaceChildren();if(!data.jobs.length)list.append(el('p','dialog-description','在文件列表可下载、上传或复制文件到另一台服务器。'));
     for(const job of data.jobs.slice().reverse()){
       const item=el('div','download-item'),heading=el('div','download-heading');heading.append(el('strong','',job.name),el('span','',downloadStates[job.state]||job.state));item.append(heading);
-      const progress=el('progress');progress.max=job.total||1;progress.value=job.downloaded;item.append(progress);
-      item.append(el('div','download-detail',humanSize(job.downloaded)+' / '+humanSize(job.total)+' · '+job.profile.name));
+      const transferred=job.state==='staging'?job.received:job.downloaded;
+      const progress=el('progress');progress.max=job.total||1;progress.value=transferred;item.append(progress);
+      const route=job.kind==='copy'?job.source_profile.name+' → '+job.profile.name:
+        job.kind==='upload'?'本机 → '+job.profile.name:job.profile.name+' → 本机';
+      item.append(el('div','download-detail',humanSize(transferred)+' / '+humanSize(job.total)+' · '+route));
+      if(job.kind)item.append(el('div','download-detail',job.remote_path));
       const message=el('div','download-message',job.message);message.title=job.message;item.append(message);
       const actions=el('div','download-actions');
-      const addAction=(text,action)=>{const button=el('button','secondary-button',text);button.onclick=async()=>{button.disabled=true;try{let body={};if(['resume','restart'].includes(action)){const policy=await ensureConnection(job.profile);if(policy===null)return;body.forwarding=policy;}await api('/api/downloads/'+job.id+'/'+action,body);refreshDownloads();}catch(error){toast(error.message,true);}finally{button.disabled=false;}};actions.append(button);};
+      const addAction=(text,action)=>{const button=el('button','secondary-button',text);button.onclick=async()=>{button.disabled=true;try{let body={};if(['resume','restart'].includes(action)){if(job.source_profile)await ensureConnection(job.source_profile,false);const policy=await ensureConnection(job.profile,job.kind?false:undefined);if(policy===null)return;body.forwarding=policy;}await api('/api/downloads/'+job.id+'/'+action,body);refreshDownloads();}catch(error){toast(error.message,true);}finally{button.disabled=false;}};actions.append(button);};
       if(['queued','running','retrying'].includes(job.state))addAction('暂停','pause');
-      if(['paused','cancelled'].includes(job.state))addAction('继续','resume');
-      if(job.state==='changed')addAction('保留旧文件并重新下载','restart');
-      if(!['completed','cancelled','pausing'].includes(job.state))addAction('取消','cancel');
-      if(remoteClient){
+      if(['paused','cancelled'].includes(job.state)&&job.staged!==false)addAction('继续','resume');
+      if(job.state==='changed'&&!job.kind)addAction('保留旧文件并重新下载','restart');
+      if(!['completed','cancelled','pausing','staging'].includes(job.state))addAction('取消','cancel');
+      if(!job.kind&&remoteClient){
         if(job.state==='completed'){const download=el('a','secondary-button','保存到手机');download.href='/api/downloads/'+job.id+'/file';download.setAttribute('download',job.name);actions.append(download);}
-      }else addAction('在本机显示','reveal');item.append(actions);list.append(item);
+      }else if(!job.kind)addAction('在本机显示','reveal');item.append(actions);list.append(item);
     }
   }catch(_){if(!shuttingDown)$('#app-status').textContent='本机服务未连接；远程 screen 保留';}
 }

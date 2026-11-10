@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
@@ -172,6 +173,39 @@ class AppTests(unittest.TestCase):
         self.assertEqual(Path(actual['local_path']).read_bytes(),payload)
         self.assertGreaterEqual(offsets.count(0),2)
         self.assertFalse(Path(actual['part_path']).exists())
+
+    def test_upload_http_preserves_binary_data_and_existing_files(self):
+        self.ws.activate(self.profile['id'], False)
+        payload = os.urandom(2*transfers.BLOCK_SIZE+101)
+        name = '二进制 # 文件.bin'
+        query = urlencode(dict(profile_id=self.profile['id'], directory=str(self.remote), name=name))
+        server = app.Server(0, self.ws)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        client = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=10)
+        headers = {'X-ScreenDesk-Token': self.ws.token, 'Origin': server.origin,
+                   'Content-Type': 'application/octet-stream'}
+
+        def upload(data):
+            client.request('POST', '/api/uploads?'+query, body=data, headers=headers)
+            response = client.getresponse()
+            result = json.loads(response.read())
+            self.assertEqual(response.status, 200, result)
+            return next(job for job in self.ws.transfers.jobs if job['id'] == result['id'])
+
+        try:
+            job = upload(payload)
+            wait_for(lambda: job['state'] == 'completed', 12)
+            self.assertEqual((self.remote/name).read_bytes(), payload)
+            wait_for(lambda: not self.ws.transfers._upload_path(job).exists())
+            conflict = upload(b'other')
+            wait_for(lambda: conflict['state'] == 'changed')
+            self.assertEqual((self.remote/name).read_bytes(), payload)
+            self.assertEqual(list(self.remote.iterdir()), [self.remote/name])
+        finally:
+            client.close()
+            server.shutdown()
+            server.server_close()
 
     def test_05_pause_restart_and_changed_source(self):
         source=self.remote/'pause.bin';source.write_bytes(os.urandom(12*1024*1024))
