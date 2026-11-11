@@ -319,7 +319,7 @@ class Workspace:
     def connection_key(profile):
         return tuple(profile.get(key, "") for key in ("host", "user", "port", "identity"))
 
-    def activate(self, identifier, forwarding):
+    def activate(self, identifier, forwarding, *, file_only=False):
         with self.lock:
             profile = next((p for p in self.profiles if p["id"] == identifier), None)
             if not profile or not isinstance(forwarding, bool):
@@ -327,8 +327,12 @@ class Workspace:
             connection = self.connections.setdefault(identifier, dict(profile=dict(profile), forwarding=forwarding, policies=[]))
             if forwarding not in connection["policies"]:
                 connection["policies"].append(forwarding)
-            connection["forwarding"] = forwarding
-            self.active_profile, self.active_forwarding = dict(profile), forwarding
+            active_id = (self.active_profile or {}).get("id")
+            if not file_only:
+                connection["forwarding"] = forwarding
+                self.active_profile, self.active_forwarding = dict(profile), forwarding
+            elif active_id not in self.connections:
+                self.active_profile, self.active_forwarding = dict(profile), connection["forwarding"]
             return self.snapshot()
 
     def require_active(self, identifier=None, forwarding=None, profile=None):
@@ -1277,6 +1281,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 workspace.auth.answer(auth_match[1], data.get("answer"), cancel=cancel)
                 return self.response(200, dict(ok=True))
             if path == "/api/connect":
+                if data.get("file_only") is True:
+                    return self.response(200, workspace.activate(data.get("profile_id"), False, file_only=True))
                 return self.response(200, workspace.activate(data.get("profile_id"), data.get("forwarding")))
             if path == "/api/profiles/reload":
                 workspace.reload_profiles()
@@ -1295,7 +1301,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 profile = workspace.require_active(data.get("profile_id"), data.get("forwarding"))
                 if not profile or not isinstance(data.get("forwarding"), bool):
                     raise UserError("请先选择服务器和本次转发方式")
-                workspace.forwarding_choices[profile["id"]] = data["forwarding"]
                 result = workspace.transfers.list_directory(profile, data.get("path", "."), data["forwarding"], data.get("cursor"))
                 return self.response(200, result)
             if path == "/api/files/disk":

@@ -133,6 +133,15 @@ class AppTests(unittest.TestCase):
         self.assertIn('ClearAllForwardings=yes',self.ws.ssh_args(self.profile,True,True))
         self.assertNotIn('screen -ls |',app.remote_script(self.session(),True,'token'))
 
+    def test_file_connection_preserves_existing_forwarding_preference(self):
+        self.ws.activate(self.profile["id"], True)
+        snapshot = self.ws.activate(self.profile["id"], False, file_only=True)
+        connection = snapshot["connections"][self.profile["id"]]
+        self.assertEqual(connection["policies"], [True, False])
+        self.assertTrue(connection["forwarding"])
+        self.assertTrue(snapshot["forwarding"])
+        self.assertEqual(self.ws.require_active(self.profile["id"], False), self.profile)
+
     def test_02_ready_filter_at_every_split(self):
         prompt=app.ReadyFilter('token',lambda ref:None)
         self.assertEqual(prompt.feed(b'Password: '),b'Password: ')

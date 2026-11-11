@@ -72,6 +72,12 @@ async function ensureConnection(profile,requested){
   const policy=requested===undefined?await chooseForwarding(profile):requested;if(policy===null)return null;
   absorb(await api('/api/connect',{profile_id:profile.id,forwarding:policy}));return policy;
 }
+async function ensureFileConnection(profile){
+  const connection=connections.get(profile.id);
+  if((connection?.policies??[connection?.forwarding]).includes(false))return;
+  const data=await api('/api/connect',{profile_id:profile.id,file_only:true});
+  absorb(data);
+}
 async function switchProfile(profile){
   activeMobileWindow()?.inputGate.close();
   mobile?.closeMenu();
@@ -637,7 +643,7 @@ function restoreFileBrowsers(){
 function createFileBrowser(fileProfile){
   const element=document.querySelector('#file-browser-template').content.firstElementChild.cloneNode(true);
   const $=selector=>element.querySelector(selector);
-  let filePage=null,fileForwarding=false,fileBusy=false,usageVersion=0;
+  let filePage=null,fileBusy=false,usageVersion=0;
   $('.file-server-name').textContent=fileProfile.name;
   element.setAttribute('aria-label',fileProfile.name+' 文件列表');
   $('.collapse-files').onclick=()=>closeFileBrowser(fileProfile.id);
@@ -674,7 +680,7 @@ function createFileBrowser(fileProfile){
     const current=()=>element.isConnected&&version===usageVersion;
     label.textContent='正在读取磁盘空间…';
     try{
-      const {disk}=await api('/api/files/disk',{profile_id:fileProfile.id,forwarding:fileForwarding,path});
+      const {disk}=await api('/api/files/disk',{profile_id:fileProfile.id,forwarding:false,path});
       if(current())label.textContent=disk?
         '磁盘 '+humanSize(disk.available)+' 可用 / '+humanSize(disk.total)+' 总计':'磁盘空间不可用';
     }catch(_){
@@ -687,13 +693,13 @@ function createFileBrowser(fileProfile){
     fileBusy=true;
     $('.file-page-label').textContent='读取中…';
     try{
-      const policy=await ensureConnection(fileProfile);
-      if(policy===null||!element.isConnected)return;
+      await ensureFileConnection(fileProfile);
+      if(!element.isConnected)return;
       if(!next)release(filePage?.cursor);
       const path=next?filePage.path:(pathOverride??($('.remote-path').value.trim()||'.'));
-      const result=await api('/api/files',{profile_id:fileProfile.id,forwarding:policy,path,cursor:next?filePage.cursor:null});
+      const result=await api('/api/files',{profile_id:fileProfile.id,forwarding:false,path,cursor:next?filePage.cursor:null});
       if(!element.isConnected){release(result.cursor);return;}
-      filePage=result;fileForwarding=policy;
+      filePage=result;
       $('.remote-path').value=result.path;
       renderFiles();
       if(!next)readDisk(result.path);
@@ -721,7 +727,7 @@ function createFileBrowser(fileProfile){
         size.title=item.size==null?'大小未知':item.size+' 字节';
       }
       e.append(size);
-      if(item.kind!=='directory'&&!item.unsupported){const down=el('button','file-download','↓');down.title='下载 '+item.name+'（'+humanSize(item.size)+'）';down.onclick=async()=>{try{await api('/api/downloads',{profile_id:fileProfile.id,forwarding:fileForwarding,path:remoteJoin(filePage.path,item.name)});toast('已加入下载任务');refreshDownloads();}catch(error){toast(error.message,true);}};e.append(down);
+      if(item.kind!=='directory'&&!item.unsupported){const down=el('button','file-download','↓');down.title='下载 '+item.name+'（'+humanSize(item.size)+'）';down.onclick=async()=>{try{await api('/api/downloads',{profile_id:fileProfile.id,forwarding:false,path:remoteJoin(filePage.path,item.name)});toast('已加入下载任务');refreshDownloads();}catch(error){toast(error.message,true);}};e.append(down);
         if(item.kind==='file'){
           const copy=el('button','file-download','⇢');
           copy.title='复制 '+item.name+' 到另一台服务器';
@@ -794,7 +800,7 @@ copyForm.onsubmit=async event=>{
   const button=$('[type=submit]',copyForm);
   button.disabled=true;clearError(copyDialog);
   try{
-    if(!connections.has(target.id))await ensureConnection(target,false);
+    await ensureFileConnection(target);
     await api('/api/server-copy',{source_id:source.profile.id,target_id:target.id,
       path:source.path,directory:copyForm.elements.directory.value});
     copyDialog.close();toast('已加入互传任务');refreshDownloads();
@@ -820,7 +826,7 @@ async function refreshDownloads(){
       if(job.kind)item.append(el('div','download-detail',job.remote_path));
       const message=el('div','download-message',job.message);message.title=job.message;item.append(message);
       const actions=el('div','download-actions');
-      const addAction=(text,action)=>{const button=el('button','secondary-button',text);button.onclick=async()=>{button.disabled=true;try{let body={};if(['resume','restart'].includes(action)){if(job.source_profile)await ensureConnection(job.source_profile,false);const policy=await ensureConnection(job.profile,job.kind?false:undefined);if(policy===null)return;body.forwarding=policy;}await api('/api/downloads/'+job.id+'/'+action,body);refreshDownloads();}catch(error){toast(error.message,true);}finally{button.disabled=false;}};actions.append(button);};
+      const addAction=(text,action)=>{const button=el('button','secondary-button',text);button.onclick=async()=>{button.disabled=true;try{let body={};if(['resume','restart'].includes(action)){if(job.source_profile)await ensureFileConnection(job.source_profile);await ensureFileConnection(job.profile);body.forwarding=false;}await api('/api/downloads/'+job.id+'/'+action,body);refreshDownloads();}catch(error){toast(error.message,true);}finally{button.disabled=false;}};actions.append(button);};
       if(['queued','running','retrying'].includes(job.state))addAction('暂停','pause');
       if(['paused','cancelled'].includes(job.state)&&job.staged!==false)addAction('继续','resume');
       if(job.state==='changed'&&!job.kind)addAction('保留旧文件并重新下载','restart');
