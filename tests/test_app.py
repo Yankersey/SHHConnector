@@ -539,6 +539,62 @@ class AppTests(unittest.TestCase):
             shutil.rmtree(directory,ignore_errors=True)
 
     @unittest.skipUnless(os.environ.get('SCREENDESK_TEST_SCREEN')=='1','set SCREENDESK_TEST_SCREEN=1 for real screen PTY lifecycle')
+    def test_scanned_screen_can_be_detached_and_ended(self):
+        directory = Path(tempfile.mkdtemp(prefix="sds-scan-", dir="/tmp"))
+        previous = os.environ.get("SCREENDIR")
+        os.environ["SCREENDIR"] = str(directory)
+        record = self.ws.record(self.session()["id"])
+        self.ws.activate(self.profile["id"], False)
+        terminals = []
+
+        def attach():
+            output = CaptureSocket()
+            terminal = app.Terminal(self.ws, record, output, 80, 24)
+            terminals.append(terminal)
+            self.ws.terminals[record["id"]] = terminal
+            terminal.start()
+            wait_for(lambda: terminal.announced)
+            return terminal, output
+
+        def control(action, confirmed=True):
+            scan = self.ws.scan_screens(self.profile["id"], False)
+            entry = next(item for item in scan["entries"] if item["screen_ref"] == record["screen_ref"])
+            self.assertEqual(entry["state"], "attached")
+            data = dict(profile_id=self.profile["id"], scan_id=scan["scan_id"],
+                        screen_ref=record["screen_ref"], action=action, confirmed=confirmed)
+            return self.ws.control_discovered_screen(data, lambda identifier: self.assertEqual(identifier, record["id"]))
+
+        try:
+            first, output = attach()
+            first.write("SD_SCAN_KEEP=still-here\nprintf 'SCAN_%s\\n' 'READY'\n")
+            wait_for(lambda: b"SCAN_READY" in output.output)
+            subprocess.run(["screen", "-U", "-dmS", "unrelated-scan-fixture"], check=True, timeout=5)
+            self.assertEqual(control("detach")["state"], "detached")
+            self.assertTrue(first.stopped)
+            self.assertEqual(record["state"], "detached")
+            second, output = attach()
+            second.write("printf 'CHECK=%s\\n' \"$SD_SCAN_KEEP\"\n")
+            wait_for(lambda: b"CHECK=still-here" in output.output)
+            with self.assertRaisesRegex(app.UserError, "确认结束"):
+                control("terminate", confirmed=False)
+            self.assertFalse(second.stopped)
+            self.assertEqual(control("terminate")["state"], "ended")
+            self.assertTrue(second.stopped)
+            self.assertFalse(self.ws.snapshot()["sessions"])
+            remaining = self.ws.scan_screens(self.profile["id"], False)["entries"]
+            self.assertEqual([item["name"] for item in remaining], ["unrelated-scan-fixture"])
+        finally:
+            for terminal in terminals:
+                terminal.stop()
+            for name in (record["remote_name"], "unrelated-scan-fixture"):
+                subprocess.run(["screen", "-S", name, "-X", "quit"], capture_output=True, timeout=5)
+            if previous is None:
+                os.environ.pop("SCREENDIR", None)
+            else:
+                os.environ["SCREENDIR"] = previous
+            shutil.rmtree(directory, ignore_errors=True)
+
+    @unittest.skipUnless(os.environ.get('SCREENDESK_TEST_SCREEN')=='1','set SCREENDESK_TEST_SCREEN=1 for real screen PTY lifecycle')
     def test_07_real_screen_survives_drop_then_explicit_quit(self):
         directory=Path(tempfile.mkdtemp(prefix='sds-',dir='/tmp'))
         previous=os.environ.get('SCREENDIR');os.environ['SCREENDIR']=str(directory)

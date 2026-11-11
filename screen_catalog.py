@@ -1,5 +1,6 @@
-"""Read-only screen discovery and reversible names stored in screen itself."""
+"""Screen discovery, scoped controls, and reversible names stored in screen itself."""
 import re
+import shlex
 import unicodedata
 
 # Names passed to the remote shell are also shell-quoted. This whitelist excludes
@@ -79,6 +80,47 @@ printf '\\n__SD_LIST_%s_END__\\n'
 """ % (marker, marker)
 
 
+def scanned_control_script(ref, action):
+    if not SAFE_REF.fullmatch(ref) or not re.match(r"^[0-9]+\.", ref) or len(ref.encode("utf-8")) > 80:
+        raise ValueError("无效的 screen 标识")
+    commands = {
+        "detach": ('sd_run screen -d "$ref"', "detached"),
+        "terminate": ('sd_run screen -S "$ref" -X quit', "missing"),
+    }
+    command, expected = commands[action]
+    return r"""ref=%s
+export LC_ALL=C
+sd_state() {
+  sd_listing=$(sd_run screen -ls "$ref" 2>&1)
+  case "$?" in 0|1) ;; *) printf 'unknown\n'; return ;; esac
+  printf '%%s\n' "$sd_listing" | awk -v ref="$ref" '
+    /^[[:space:]]*[0-9]+\./ {
+      if ($1 != ref) { other=1; next }
+      state="unknown"
+      if (/\(Attached\)[[:space:]]*$/) state="attached"
+      if (/\(Detached\)[[:space:]]*$/) state="detached"
+    }
+    /^No Sockets found in / { missing=1 }
+    END { if (other) print "ambiguous"; else if (state) print state; else print missing ? "missing" : "unknown" }
+  '
+}
+state=$(sd_state)
+case "$state" in
+  attached|detached) ;;
+  *) printf '无法确认唯一的目标 screen，请重新扫描。\n' >&2; exit 1 ;;
+esac
+expected=%s
+[ "$state" = "$expected" ] && exit 0
+%s || exit $?
+for attempt in 1 2 3 4 5; do
+  [ "$(sd_state)" = "$expected" ] && exit 0
+  sleep 0.2
+done
+printf '未确认 screen 已完成操作，请重新扫描。\n' >&2
+exit 1
+""" % (shlex.quote(ref), expected, command)
+
+
 def parse_scan(output, marker):
     begin, end = "__SD_LIST_%s_BEGIN__\n" % marker, "__SD_LIST_%s_END__" % marker
     start = output.find(begin)
@@ -103,10 +145,12 @@ def parse_scan(output, marker):
         bare_name = ref.split(".", 1)[1]
         encoded = embedded_name(bare_name)
         supported = bool(SAFE_REF.fullmatch(ref))
+        live = state in ("attached", "detached")
         entries.append(dict(screen_ref=ref, name=encoded or bare_name,
                             name_source="rule" if encoded else "screen",
                             managed=bool(encoded),
-                            state=state, status=status, addable=supported and state in ("attached", "detached"),
+                            state=state, status=status, addable=supported and live,
+                            controllable=supported and live and len(ref.encode("utf-8")) <= 80,
                             reason=("socket 已失效；扫描不会清理或结束它" if state == "dead" else
                                     "此标识含暂不支持的字符" if not supported else
                                     "无法确认会话状态" if state == "unknown" else "")))

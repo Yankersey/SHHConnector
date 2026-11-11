@@ -29,7 +29,7 @@ from transfers import TransferManager, SFTPError
 from ssh_config import read_profiles
 from platform_support import open_workspace
 from local_runtime import WINDOWS, background_options, open_terminal, system_ssh, try_lock
-from screen_catalog import SAFE_REF, matches_ref, parse_scan, scan_script, session_name, valid_name
+from screen_catalog import SAFE_REF, matches_ref, parse_scan, scan_script, scanned_control_script, session_name, valid_name
 from ssh_auth import AuthError, AuthManager
 from mobile_access import MobileAccess, MobileAccessError
 from shared_terminal import SharedTerminal
@@ -244,6 +244,7 @@ class Workspace:
         self.connections = {}
         self.ignored_screens = {}
         self.screen_scans = {}
+        self.screen_actions = set()
         if WINDOWS:
             from windows_tunnels import NativeTunnels
             self.native_tunnels = NativeTunnels(self)
@@ -464,6 +465,8 @@ class Workspace:
             existing = str(data.get("screen_ref", "")).strip()
             if existing and not SAFE_REF.fullmatch(existing):
                 raise UserError("已有 screen 标识含不支持的字符，请从扫描结果中选择")
+            if (profile["id"], existing) in self.screen_actions:
+                raise UserError("此 screen 正在处理")
             if existing and any(r["state"] != "ended" and r["profile_id"] == profile["id"] and
                                 matches_ref(r.get("screen_ref") or r["remote_name"], existing)
                                 for r in self.records):
@@ -530,6 +533,73 @@ class Workspace:
                                            layout={"visible": True}))
             entry["added"] = True
             return record
+
+    def control_discovered_screen(self, data, require_control):
+        action = data.get("action")
+        if action not in ("detach", "terminate"):
+            raise UserError("未知的 screen 操作")
+        if action == "terminate" and data.get("confirmed") is not True:
+            raise UserError("请确认结束这个 screen")
+        with self.lock:
+            scan, entry = self.discovered_screen(data)
+            if not entry["controllable"]:
+                raise UserError(entry["reason"] or "这个 screen 的标识过长，无法安全操作")
+            profile_id, ref = data["profile_id"], entry["screen_ref"]
+            key = (profile_id, ref)
+            if key in self.screen_actions:
+                raise UserError("此 screen 正在处理")
+            records = [record for record in self.records
+                       if record["profile_id"] == profile_id and record["state"] != "ended"
+                       and record.get("screen_ref") == ref
+                       and self.connection_key(record["profile"]) == self.connection_key(scan["profile"])]
+            terminals = []
+            for record in records:
+                require_control(record["id"])
+                terminal = self.terminals.get(record["id"])
+                if terminal and not terminal.stopped:
+                    if terminal.closing:
+                        raise UserError("此窗口正在关闭")
+                    terminals.append(terminal)
+            self.screen_actions.add(key)
+            for terminal in terminals:
+                terminal.closing = True
+        state = None
+        try:
+            command = remote_deadline_shell() + scanned_control_script(ref, action)
+            purpose = "分离 screen" if action == "detach" else "结束 screen"
+            try:
+                result = self.run_ssh(scan["profile"], command, scan["forwarding"], purpose, 25)
+            except subprocess.TimeoutExpired as exc:
+                raise UserError("远程操作超时，请重新扫描确认状态") from exc
+            if result.returncode:
+                detail = result.stdout.decode("utf-8", "replace").strip()[-1200:]
+                raise UserError("未确认操作成功，请重新扫描。\n" + detail)
+            state = "detached" if action == "detach" else "ended"
+            with self.lock:
+                for record in records:
+                    if record in self.records:
+                        record["state"] = state
+                if records:
+                    self.save()
+                latest = self.screen_scans.get(profile_id)
+                if latest and latest["profile"] == scan["profile"]:
+                    if state == "ended":
+                        latest["entries"].pop(ref, None)
+                    elif ref in latest["entries"]:
+                        latest["entries"][ref].update(state="detached", status="Detached")
+            return dict(state=state, record_ids=[record["id"] for record in records])
+        finally:
+            for terminal in terminals:
+                if state:
+                    if isinstance(terminal.ws, SharedTerminal):
+                        terminal.ws.finish(state)
+                    terminal.stop()
+                else:
+                    terminal.closing = False
+                    if terminal.stopped and isinstance(terminal.ws, SharedTerminal):
+                        terminal.ws.finish(terminal.record["state"])
+            with self.lock:
+                self.screen_actions.discard(key)
 
     def ignore_discovered_screen(self, data):
         if not isinstance(data.get("ignored"), bool):
@@ -647,6 +717,8 @@ case "$pid" in ''|*[!0-9]*) ;; *)
             raise UserError("未知的关闭方式")
         with self.lock:
             record = self.record(identifier)
+            if (record["profile_id"], record.get("screen_ref")) in self.screen_actions:
+                raise UserError("此 screen 正在处理")
             terminal = self.terminals.get(identifier)
             if terminal and terminal.closing:
                 raise UserError("此窗口正在关闭")
@@ -1359,6 +1431,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.response(200, workspace.add_discovered_screen(data))
             if path == "/api/screens/ignore":
                 return self.response(200, workspace.ignore_discovered_screen(data))
+            if path == "/api/screens/control":
+                view_ids = data.get("view_ids", {})
+                if not isinstance(view_ids, dict):
+                    raise UserError("无效的共享终端标识")
+                result = workspace.control_discovered_screen(
+                    data, lambda identifier: self.require_terminal_control(identifier, view_ids.get(identifier)))
+                return self.response(200, result)
             match = re.fullmatch(r"/api/sessions/([0-9a-f]{32})/(close|layout|forget|diagnose|options|check)", path)
             if match:
                 identifier, action = match.groups()
@@ -1439,6 +1518,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 workspace.require_active(record["profile_id"], profile=record["profile"])
                 if record["state"] == "ended":
                     raise UserError("此 screen 已结束，请新建窗口")
+                if (record["profile_id"], record.get("screen_ref")) in workspace.screen_actions:
+                    raise UserError("此 screen 正在处理")
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 forwarding = query.get("forwarding", [None])[0]
                 if forwarding not in ("0", "1"):

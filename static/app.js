@@ -26,6 +26,7 @@ let pendingNew = false, closeTarget = null, shuttingDown = false, activeForwardi
 let downloadsTimer = null;
 let authTimer=null,authPolling=false,authAnswerBusy=false,activeAuth=null;
 let screenScan = null, scanBusy = false, scanSerial = 0;
+let screenAction = null, screenActionBusy = false;
 const profilePolicies = new Map();
 const connections = new Map();
 let workspaceTimer=null,workspacePolling=false,workspaceMutation=0;
@@ -498,9 +499,65 @@ function renderScreenScan(){
     const context={profile_id:screenScan.profile.id,scan_id:screenScan.scan_id,screen_ref:entry.screen_ref};
     add.onclick=async()=>{add.disabled=true;try{const record=await api('/api/screens/add',context);sessions.push(record);entry.added=true;if(selectedProfile===record.profile_id)await openSession(record,false);renderSidebar();renderScreenScan();toast('已添加“'+record.name+'”；点击重新连接才会连接服务器。');}catch(error){toast(error.message,true);add.disabled=entry.added||!entry.addable||entry.ignored;}};
     ignore.onclick=async()=>{ignore.disabled=true;try{await api('/api/screens/ignore',{...context,ignored:!entry.ignored});entry.ignored=!entry.ignored;renderScreenScan();}catch(error){toast(error.message,true);ignore.disabled=false;}};
-    actions.append(add,ignore);row.append(heading,ref,message,actions);list.append(row);
+    actions.append(add,ignore);
+    if(entry.controllable){
+      if(entry.state==='attached'){
+        const detach=el('button','secondary-button','分离');
+        detach.onclick=()=>openScreenAction(entry,context,'detach');
+        actions.append(detach);
+      }
+      const end=el('button','secondary-button danger-text','结束 screen');
+      end.onclick=()=>openScreenAction(entry,context,'terminate');
+      actions.append(end);
+    }
+    row.append(heading,ref,message,actions);list.append(row);
   }
 }
+const screenActionDialog=$('#screen-action-dialog');
+function openScreenAction(entry,context,action){
+  if(screenActionBusy)return;
+  screenAction={entry,context,action};
+  const terminate=action==='terminate';
+  $('#screen-action-title').textContent=terminate?'结束 screen？':'分离 screen？';
+  $('#screen-action-target').textContent=screenScan.profile.name+' · '+entry.name+' · '+entry.screen_ref;
+  $('#screen-action-detail').textContent=terminate?
+    '此 screen 内运行的程序会被终止。':'当前附加的终端会断开，screen 内的任务继续运行。';
+  $('#confirm-screen-action').textContent=terminate?'确认结束':'确认分离';
+  showDialog(screenActionDialog);
+}
+screenActionDialog.addEventListener('cancel',event=>{if(screenActionBusy)event.preventDefault();});
+$('#confirm-screen-action').onclick=async()=>{
+  if(!screenAction||screenActionBusy)return;
+  const {entry,context,action}=screenAction;
+  screenActionBusy=true;
+  const buttons=$$('button',screenActionDialog);
+  buttons.forEach(button=>button.disabled=true);
+  clearError(screenActionDialog);
+  try{
+    const view_ids=Object.fromEntries([...windows].map(([id,win])=>[id,win.viewId]));
+    const result=await api('/api/screens/control',{...context,action,confirmed:true,view_ids});
+    if(result.state==='ended'){
+      const ended=new Set(result.record_ids);
+      sessions=sessions.filter(record=>!ended.has(record.id));
+      ended.forEach(destroyWindow);
+      screenScan.entries=screenScan.entries.filter(row=>row!==entry);
+    }else{
+      entry.state='detached';
+      for(const id of result.record_ids){
+        const record=sessions.find(item=>item.id===id);
+        if(record)record.state='detached';
+      }
+    }
+    renderSidebar();
+    renderScreenScan();
+    screenActionDialog.close();
+    toast(result.state==='ended'?'screen 已结束。':'screen 已分离，任务继续运行。');
+  }catch(error){errorIn(screenActionDialog,error);}
+  finally{
+    screenActionBusy=false;
+    buttons.forEach(button=>button.disabled=false);
+  }
+};
 async function runScreenScan(profile,forwarding){
   const serial=++scanSerial,dialog=$('#screen-scan-dialog');scanBusy=true;screenScan=null;
   $('#screen-scan-results').replaceChildren();$('#screen-scan-summary').textContent='正在扫描…';$('#screen-scan-title').textContent='服务器 screen · '+profile.name;
