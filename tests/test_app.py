@@ -157,6 +157,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(len(all_entries),504)
         self.assertNotIn('not-traversed.txt',[e['name'] for e in all_entries])
 
+    def test_file_disk_reports_the_current_filesystem(self):
+        folder = self.remote / "实验 dir '"
+        folder.mkdir()
+        result = self.ws.file_disk(self.profile, str(folder), False)
+        expected = subprocess.check_output(["df", "-Pk", str(folder)]).splitlines()[1].split()
+        self.assertEqual(result["disk"]["total"], int(expected[1]) * 1024)
+        self.assertGreater(result["disk"]["available"], 0)
+        self.assertLessEqual(result["disk"]["available"], result["disk"]["total"])
+        self.assertIsNone(self.ws.file_disk(self.profile, str(folder / "missing"), False)["disk"])
+        with self.assertRaises(app.UserError):
+            self.ws.file_disk(self.profile, "../other", False)
+
     def test_04_download_auto_resume_after_drop(self):
         source=self.remote/'network drop.bin';payload=os.urandom(4*1024*1024+321);source.write_bytes(payload)
         original=transfers.SFTP.read_block;dropped=threading.Event();offsets=[]

@@ -38,7 +38,28 @@
     <button id="downloads-button" class="downloads-toggle">⇅ 传输任务 <span id="download-count">0</span></button>
     <div class="sidebar-bottom"><span class="small-dot"></span><div>使用系统 SSH<small>密钥与配置保留在本机</small></div><button class="icon-button" id="help-button" title="使用说明" aria-label="使用说明">?</button></div>
   </aside>
-  <aside id="file-drawer" hidden aria-label="文件列表面板"><div class="file-drawer-heading"><strong>文件列表</strong><button id="collapse-files" title="折叠文件列表">‹ 折叠</button></div><div class="file-panel"><div class="section-label">当前层 · 不递归 <button class="icon-button" id="refresh-files" title="刷新当前目录">↻</button></div><div class="file-nav"><button id="parent-directory" title="上一级">↑</button><form id="path-form"><input id="remote-path" placeholder="远程路径" autocomplete="off" spellcheck="false"></form><button id="open-files" title="读取当前目录">→</button></div><div class="file-options"><label><input type="checkbox" id="group-extensions" checked>按后缀折叠</label><span id="file-page-label">按需读取</span></div><div class="file-options"><button type="button" class="secondary-button" id="upload-files">↑ 上传到当前目录</button><input id="upload-picker" type="file" multiple hidden></div><div id="file-list" class="file-list"><p class="sidebar-placeholder">选择服务器后点击 → 读取当前目录。每次最多 200 项。</p></div><button id="next-file-page" class="next-page" hidden>下一页（最多 200 项） →</button></div><div id="file-drawer-resize" role="separator" aria-label="拖动调整文件列表宽度" aria-orientation="vertical"></div></aside>
+  <aside id="file-drawer" hidden aria-label="服务器文件列表">
+    <label class="file-server-picker">文件列表 <select id="file-server" aria-label="打开服务器文件列表"></select></label>
+    <div id="file-browsers"></div>
+  </aside>
+  <template id="file-browser-template">
+    <section class="file-browser">
+      <div class="file-drawer-heading"><strong class="file-server-name"></strong><button class="collapse-files" type="button">关闭</button></div>
+      <div class="file-panel">
+        <div class="file-options"><span class="file-disk" title="当前目录所在文件系统的可用空间 / 总空间">磁盘空间待查询</span><button class="icon-button refresh-files" title="刷新当前目录">↻</button></div>
+        <div class="file-nav">
+          <button class="parent-directory" title="上一级">↑</button>
+          <form class="path-form"><input class="remote-path" aria-label="远程路径" placeholder="远程路径" autocomplete="off" spellcheck="false"></form>
+          <button class="open-files" title="读取当前目录">→</button>
+        </div>
+        <div class="file-options"><label><input class="group-extensions" type="checkbox" checked>按后缀折叠</label><span class="file-page-label">按需读取</span></div>
+        <div class="file-options"><button type="button" class="secondary-button upload-files">↑ 上传到当前目录</button><input class="upload-picker" type="file" multiple hidden></div>
+        <div class="file-list"><p class="sidebar-placeholder">点击 → 读取当前目录。</p></div>
+        <button class="next-page next-file-page" hidden>下一页（最多 200 项） →</button>
+      </div>
+      <div class="file-drawer-resize" aria-hidden="true"></div>
+    </section>
+  </template>
   <main>
     <header class="topbar">
       <div class="topbar-start">

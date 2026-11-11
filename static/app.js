@@ -22,7 +22,7 @@ applyTheme();
 const stateNames = {new:'等待连接', connecting:'正在登录', connected:'已连接', detached:'已分离', disconnected:'连接已断开', ended:'已结束'};
 let profiles = [], sessions = [], selectedProfile = null, zIndex = 10, selectedWindow = null;
 let pendingNew = false, closeTarget = null, shuttingDown = false, activeForwarding = null;
-let filePage = null, fileProfile = null, fileForwarding = false, fileBusy = false;
+
 let downloadsTimer = null;
 let authTimer=null,authPolling=false,authAnswerBusy=false,activeAuth=null;
 let screenScan = null, scanBusy = false, scanSerial = 0;
@@ -75,9 +75,8 @@ async function ensureConnection(profile,requested){
 async function switchProfile(profile){
   activeMobileWindow()?.inputGate.close();
   mobile?.closeMenu();
-  const changed=selectedProfile!==profile.id;
   selectedProfile=profile.id;sessionStorage.setItem('sd-profile',profile.id);
-  if(changed){filePage=null;fileProfile=null;$('#remote-path').value='';$('#file-list').replaceChildren(el('p','sidebar-placeholder','点击 → 读取当前层。'));$('#next-file-page').hidden=true;$('#file-page-label').textContent='按需读取';}
+  updateFileBrowsers();
   for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile;
   for(const record of currentSessions())if(record.layout?.visible&&!windows.has(record.id))await openSession(record,false);
   updateCanvas();currentWindows().forEach(fit);renderSidebar();refreshDownloads();
@@ -206,7 +205,7 @@ function openServer(profile = null) {
   $('#delete-server').hidden=!profile;
   showDialog($('#server-dialog'));
 }
-$('#add-server').onclick=async()=>{try{const data=await api('/api/profiles/reload',{});absorb(data);if(!profiles.some(p=>p.id===selectedProfile))selectedProfile=profiles[0]?.id||null;for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile;renderSidebar();toast(data.config_notes?.length?data.config_notes.join('\n'):'SSH config 已重新读取');}catch(error){toast(error.message,true);}};
+$('#add-server').onclick=async()=>{try{const data=await api('/api/profiles/reload',{});absorb(data);if(!profiles.some(p=>p.id===selectedProfile))selectedProfile=profiles[0]?.id||null;for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile;updateFileBrowsers();renderSidebar();toast(data.config_notes?.length?data.config_notes.join('\n'):'SSH config 已重新读取');}catch(error){toast(error.message,true);}};
 $('#server-form').onsubmit=async event=>{
   event.preventDefault(); const dialog=$('#server-dialog'), form=event.target;
   const button=$('[type=submit]',form); button.disabled=true;
@@ -218,7 +217,7 @@ $('#server-form').onsubmit=async event=>{
   } catch(error) {errorIn(dialog,error);} finally {button.disabled=false;}
 };
 $('#delete-server').onclick=async()=>{
-  try {const id=$('#server-form').elements.id.value; await api('/api/profiles/delete',{id}); profiles=profiles.filter(p=>p.id!==id); selectedProfile=profiles[0]?.id || null; $('#server-dialog').close(); filePage=null; renderSidebar();} catch(error){errorIn($('#server-dialog'),error);}
+  try {const id=$('#server-form').elements.id.value; await api('/api/profiles/delete',{id}); profiles=profiles.filter(p=>p.id!==id); selectedProfile=profiles[0]?.id || null; $('#server-dialog').close(); closeFileBrowser(id); updateFileBrowsers(); renderSidebar();} catch(error){errorIn($('#server-dialog'),error);}
 };
 
 // Every deliberate new connection requires an explicit forwarding choice.
@@ -584,81 +583,197 @@ $('#confirm-quit').onclick=async()=>{
 
 function humanSize(size){if(size==null)return '未知大小';if(size<1024)return size+' B';const power=Math.min(4,Math.floor(Math.log(size)/Math.log(1024)));return (size/1024**power).toFixed(1)+' '+['B','KB','MB','GB','TB'][power];}
 function remoteJoin(path,name){return (path==='/'?'':path)+'/'+name;}
-function setFilesOpen(open){
-  if(open)mobile?.closeMenu();
-  $('#file-drawer').hidden=!open;$('#toggle-files').setAttribute('aria-expanded',String(open));$('#toggle-files').replaceChildren(el('span','',open?'▾ 文件列表':'▸ 文件列表'),el('span','',open?'折叠':'展开'));localStorage.setItem('sd-files-open',open?'1':'0');updateCanvas();currentWindows().forEach(fit);
-}
-$('#toggle-files').onclick=()=>setFilesOpen($('#file-drawer').hidden);$('#collapse-files').onclick=()=>setFilesOpen(false);
-const fileWidth=Number(localStorage.getItem('sd-files-width'))||370;$('#file-drawer').style.width=Math.max(260,Math.min(760,fileWidth))+'px';
-$('#file-drawer-resize').onpointerdown=event=>{
-  event.preventDefault();const handle=event.currentTarget,start=event.clientX,width=$('#file-drawer').getBoundingClientRect().width;handle.setPointerCapture(event.pointerId);
-  const move=e=>{$('#file-drawer').style.width=Math.max(260,Math.min(760,width+e.clientX-start))+'px';};
-  const end=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',end);handle.removeEventListener('pointercancel',end);localStorage.setItem('sd-files-width',String($('#file-drawer').getBoundingClientRect().width));updateCanvas();currentWindows().forEach(fit);};
-  handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',end);handle.addEventListener('pointercancel',end);
-};
-async function readFiles(next=false,pathOverride=null){
-  if(fileBusy)return;const profile=profiles.find(p=>p.id===selectedProfile);if(!profile){toast('请先选择 SSH config 中的服务器。',true);return;}
-  fileBusy=true;$('#file-page-label').textContent='读取中…';
-  try{
-    const policy=await ensureConnection(profile);if(policy===null)return;
-    const result=await api('/api/files',{profile_id:profile.id,forwarding:policy,path:next?filePage.path:(pathOverride??($('#remote-path').value.trim()||'.')),cursor:next?filePage?.cursor:null});
-    if(selectedProfile!==profile.id)return;
-    filePage=result;fileProfile=profile;fileForwarding=policy;$('#remote-path').value=result.path;renderFiles();
-  }catch(error){toast(error.message,true);$('#file-page-label').textContent='读取失败 · 可刷新';}finally{fileBusy=false;if(!filePage)$('#file-page-label').textContent='按需读取';}
-}
-function renderFiles(){
-  if(!filePage)return;const list=$('#file-list');list.replaceChildren();$('#file-page-label').textContent='第 '+filePage.page+' 页 · '+filePage.entries.length+' 项';
-  $('#next-file-page').hidden=!filePage.more;
-  const entries=[...filePage.entries].sort((a,b)=>(a.kind==='directory'?-1:0)-(b.kind==='directory'?-1:0)||a.name.localeCompare(b.name));
-  function row(item){const e=el('div','file-row');const name=el('button','file-name');name.title=item.name;name.append(el('span','file-icon',item.kind==='directory'?'▸':item.kind==='link'?'↗':'·'),el('span','file-basename',item.name));
-    name.onclick=()=>{if(item.unsupported)return toast('此文件名不是 UTF-8，无法安全操作。',true);if(item.kind==='directory'||item.kind==='link')readFiles(false,remoteJoin(filePage.path,item.name));};
-    e.append(name);
-    if(item.kind!=='directory'&&!item.unsupported){const down=el('button','file-download','↓');down.title='下载 '+item.name+'（'+humanSize(item.size)+'）';down.onclick=async()=>{try{await api('/api/downloads',{profile_id:fileProfile.id,forwarding:fileForwarding,path:remoteJoin(filePage.path,item.name)});toast('已加入下载任务');refreshDownloads();}catch(error){toast(error.message,true);}};e.append(down);
-      if(item.kind==='file'){
-        const copy=el('button','file-download','⇢');
-        copy.title='复制 '+item.name+' 到另一台服务器';
-        copy.setAttribute('aria-label',copy.title);
-        copy.onclick=()=>openServerCopy(fileProfile,remoteJoin(filePage.path,item.name));
-        e.append(copy);
-      }
-    }
-    return e;
-  }
-  if(!entries.length)list.append(el('p','sidebar-placeholder','当前目录为空。'));
-  if(!$('#group-extensions').checked){for(const item of entries)list.append(row(item));return;}
-  const groups=new Map();for(const item of entries){let key;if(item.kind==='directory')key='文件夹';else {const match=item.name.match(/(\.[^.]+)$/);key=match?match[1].toLowerCase():'无后缀';}if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);}
-  for(const [suffix,items] of groups){const details=el('details','extension-group');details.open=items.length<=15||suffix==='文件夹';const summary=el('summary','',suffix+'  ');summary.append(el('span','',String(items.length)));details.append(summary);for(const item of items)details.append(row(item));list.append(details);}
-}
-$('#path-form').onsubmit=event=>{event.preventDefault();readFiles();};$('#open-files').onclick=()=>readFiles();$('#refresh-files').onclick=()=>readFiles();$('#next-file-page').onclick=()=>readFiles(true);$('#group-extensions').onchange=renderFiles;
-$('#parent-directory').onclick=()=>{const path=filePage?.path||$('#remote-path').value||'.';readFiles(false,path==='/'?'/':path.slice(0,path.lastIndexOf('/'))||'/');};
+const fileBrowsers=new Map();
+const fileDock=$('#file-drawer'),fileServer=$('#file-server');
 
-const uploadButton=$('#upload-files'),uploadPicker=$('#upload-picker');
-let uploadDestination=null;
-uploadButton.onclick=()=>{
-  if(!filePage||fileProfile?.id!==selectedProfile){toast('请先打开目标目录。',true);return;}
-  uploadDestination={profile_id:fileProfile.id,directory:filePage.path};
-  uploadPicker.click();
-};
-uploadPicker.onchange=async()=>{
-  const files=[...uploadPicker.files],destination=uploadDestination;
-  uploadPicker.value='';
-  if(!files.length||!destination)return;
-  uploadButton.disabled=true;
-  let queued=0;
-  try{
-    for(const file of files){
-      const query=new URLSearchParams({...destination,name:file.name});
-      const response=await fetch('/api/uploads?'+query,{
-        method:'POST',headers:{'X-ScreenDesk-Token':token,'Content-Type':'application/octet-stream'},body:file
-      });
-      const result=await response.json();
-      if(!response.ok)toast(file.name+'：'+(result.error||'上传未开始'),true);
-      else queued++;
+function updateFileBrowsers(){
+  fileDock.hidden=!fileBrowsers.size;
+  const button=$('#toggle-files');
+  button.setAttribute('aria-expanded',String(fileBrowsers.size>0));
+  button.replaceChildren(el('span','','▸ 文件列表'),el('span','',fileBrowsers.size?fileBrowsers.size+' 台已打开':'打开'));
+  fileServer.replaceChildren(new Option('打开服务器…',''),...profiles.map(profile=>new Option(profile.name,profile.id)));
+}
+
+function closeFileBrowser(id){
+  const browser=fileBrowsers.get(id);
+  if(!browser)return;
+  browser.close();
+  fileBrowsers.delete(id);
+  localStorage.setItem('sd-file-browsers',JSON.stringify([...fileBrowsers.keys()]));
+  updateFileBrowsers();
+  updateCanvas();currentWindows().forEach(fit);
+}
+
+function openFileBrowser(profile){
+  if(!profile){toast('请先选择 SSH config 中的服务器。',true);return;}
+  mobile?.closeMenu();
+  let browser=fileBrowsers.get(profile.id);
+  if(!browser){
+    browser=createFileBrowser(profile);
+    fileBrowsers.set(profile.id,browser);
+    $('#file-browsers').append(browser.element);
+    localStorage.setItem('sd-file-browsers',JSON.stringify([...fileBrowsers.keys()]));
+  }
+  updateFileBrowsers();
+  browser.element.scrollIntoView({block:'nearest',inline:'nearest'});
+  updateCanvas();currentWindows().forEach(fit);
+}
+
+$('#toggle-files').onclick=()=>openFileBrowser(profiles.find(profile=>profile.id===selectedProfile));
+fileServer.onchange=()=>{if(fileServer.value)openFileBrowser(profiles.find(profile=>profile.id===fileServer.value));};
+
+function restoreFileBrowsers(){
+  if(mobile?.isMobile()||fileBrowsers.size)return;
+  let saved;
+  try{saved=JSON.parse(localStorage.getItem('sd-file-browsers'));}catch(_){}
+  if(!Array.isArray(saved)){
+    saved=localStorage.getItem('sd-files-open')==='1'?[selectedProfile]:[];
+  }
+  for(const profile of profiles){
+    if(saved.includes(profile.id))openFileBrowser(profile);
+  }
+}
+
+function createFileBrowser(fileProfile){
+  const element=document.querySelector('#file-browser-template').content.firstElementChild.cloneNode(true);
+  const $=selector=>element.querySelector(selector);
+  let filePage=null,fileForwarding=false,fileBusy=false,usageVersion=0;
+  $('.file-server-name').textContent=fileProfile.name;
+  element.setAttribute('aria-label',fileProfile.name+' 文件列表');
+  $('.collapse-files').onclick=()=>closeFileBrowser(fileProfile.id);
+
+  function release(cursor){
+    if(cursor)api('/api/files/close',{profile_id:fileProfile.id,cursor}).catch(()=>{});
+  }
+
+  const handle=$('.file-drawer-resize');
+  const width=Number(localStorage.getItem('sd-files-width'))||370;
+  element.style.width=Math.max(270,Math.min(760,width))+'px';
+  handle.onpointerdown=event=>{
+    event.preventDefault();
+    const start=event.clientX,initial=element.getBoundingClientRect().width;
+    handle.setPointerCapture(event.pointerId);
+    const move=e=>{
+      element.style.width=Math.max(270,Math.min(760,initial+e.clientX-start))+'px';
+      updateCanvas();currentWindows().forEach(fit);
+    };
+    const end=()=>{
+      handle.removeEventListener('pointermove',move);
+      handle.removeEventListener('pointerup',end);
+      handle.removeEventListener('pointercancel',end);
+      localStorage.setItem('sd-files-width',String(element.getBoundingClientRect().width));
+    };
+    handle.addEventListener('pointermove',move);
+    handle.addEventListener('pointerup',end);
+    handle.addEventListener('pointercancel',end);
+  };
+
+  async function readDisk(path){
+    const label=$('.file-disk');
+    const version=++usageVersion;
+    const current=()=>element.isConnected&&version===usageVersion;
+    label.textContent='正在读取磁盘空间…';
+    try{
+      const {disk}=await api('/api/files/disk',{profile_id:fileProfile.id,forwarding:fileForwarding,path});
+      if(current())label.textContent=disk?
+        '磁盘 '+humanSize(disk.available)+' 可用 / '+humanSize(disk.total)+' 总计':'磁盘空间不可用';
+    }catch(_){
+      if(current())label.textContent='磁盘空间不可用';
     }
-    if(queued)toast('已加入 '+queued+' 个上传任务');
-  }catch(error){toast('本机文件接收中断：'+error.message,true);}
-  finally{uploadButton.disabled=false;refreshDownloads();}
-};
+  }
+
+  async function readFiles(next=false,pathOverride=null){
+    if(fileBusy||(next&&!filePage?.cursor))return;
+    fileBusy=true;
+    $('.file-page-label').textContent='读取中…';
+    try{
+      const policy=await ensureConnection(fileProfile);
+      if(policy===null||!element.isConnected)return;
+      if(!next)release(filePage?.cursor);
+      const path=next?filePage.path:(pathOverride??($('.remote-path').value.trim()||'.'));
+      const result=await api('/api/files',{profile_id:fileProfile.id,forwarding:policy,path,cursor:next?filePage.cursor:null});
+      if(!element.isConnected){release(result.cursor);return;}
+      filePage=result;fileForwarding=policy;
+      $('.remote-path').value=result.path;
+      renderFiles();
+      if(!next)readDisk(result.path);
+    }catch(error){
+      if(element.isConnected){
+        $('.file-page-label').textContent='读取失败 · 可刷新';
+        toast(error.message,true);
+      }
+    }finally{
+      fileBusy=false;
+      if(!filePage&&$('.file-page-label').textContent==='读取中…')$('.file-page-label').textContent='按需读取';
+    }
+  }
+
+  function renderFiles(){
+    if(!filePage)return;const list=$('.file-list');list.replaceChildren();$('.file-page-label').textContent='第 '+filePage.page+' 页 · '+filePage.entries.length+' 项';
+    $('.next-file-page').hidden=!filePage.more;
+    const entries=[...filePage.entries].sort((a,b)=>(a.kind==='directory'?-1:0)-(b.kind==='directory'?-1:0)||a.name.localeCompare(b.name));
+    function row(item){const e=el('div','file-row');const name=el('button','file-name');name.title=item.name;name.append(el('span','file-icon',item.kind==='directory'?'▸':item.kind==='link'?'↗':'·'),el('span','file-basename',item.name));
+      name.onclick=()=>{if(item.unsupported)return toast('此文件名不是 UTF-8，无法安全操作。',true);if(item.kind==='directory'||item.kind==='link')readFiles(false,remoteJoin(filePage.path,item.name));};
+      e.append(name);
+      const size=el('span','file-size');
+      if(item.kind!=='directory'&&!item.unsupported){
+        size.textContent=item.size==null?'—':humanSize(item.size);
+        size.title=item.size==null?'大小未知':item.size+' 字节';
+      }
+      e.append(size);
+      if(item.kind!=='directory'&&!item.unsupported){const down=el('button','file-download','↓');down.title='下载 '+item.name+'（'+humanSize(item.size)+'）';down.onclick=async()=>{try{await api('/api/downloads',{profile_id:fileProfile.id,forwarding:fileForwarding,path:remoteJoin(filePage.path,item.name)});toast('已加入下载任务');refreshDownloads();}catch(error){toast(error.message,true);}};e.append(down);
+        if(item.kind==='file'){
+          const copy=el('button','file-download','⇢');
+          copy.title='复制 '+item.name+' 到另一台服务器';
+          copy.setAttribute('aria-label',copy.title);
+          copy.onclick=()=>openServerCopy(fileProfile,remoteJoin(filePage.path,item.name));
+          e.append(copy);
+        }
+      }
+      return e;
+    }
+    if(!entries.length)list.append(el('p','sidebar-placeholder','当前目录为空。'));
+    if(!$('.group-extensions').checked){for(const item of entries)list.append(row(item));return;}
+    const groups=new Map();for(const item of entries){let key;if(item.kind==='directory')key='文件夹';else {const match=item.name.match(/(\.[^.]+)$/);key=match?match[1].toLowerCase():'无后缀';}if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);}
+    for(const [suffix,items] of groups){const details=el('details','extension-group');details.open=items.length<=15||suffix==='文件夹';const summary=el('summary','',suffix+'  ');summary.append(el('span','',String(items.length)));details.append(summary);for(const item of items)details.append(row(item));list.append(details);}
+  }
+  $('.path-form').onsubmit=event=>{event.preventDefault();readFiles();};$('.open-files').onclick=()=>readFiles();$('.refresh-files').onclick=()=>readFiles();$('.next-file-page').onclick=()=>readFiles(true);$('.group-extensions').onchange=renderFiles;
+  $('.parent-directory').onclick=()=>{const path=filePage?.path||$('.remote-path').value||'.';readFiles(false,path==='/'?'/':path.slice(0,path.lastIndexOf('/'))||'/');};
+
+  const uploadButton=$('.upload-files'),uploadPicker=$('.upload-picker');
+  let uploadDestination=null;
+  uploadButton.onclick=()=>{
+    if(!filePage||!element.isConnected){toast('请先打开目标目录。',true);return;}
+    uploadDestination={profile_id:fileProfile.id,directory:filePage.path};
+    uploadPicker.click();
+  };
+  uploadPicker.onchange=async()=>{
+    const files=[...uploadPicker.files],destination=uploadDestination;
+    uploadPicker.value='';
+    if(!files.length||!destination)return;
+    uploadButton.disabled=true;
+    let queued=0;
+    try{
+      for(const file of files){
+        const query=new URLSearchParams({...destination,name:file.name});
+        const response=await fetch('/api/uploads?'+query,{
+          method:'POST',headers:{'X-ScreenDesk-Token':token,'Content-Type':'application/octet-stream'},body:file
+        });
+        const result=await response.json();
+        if(!response.ok)toast(file.name+'：'+(result.error||'上传未开始'),true);
+        else queued++;
+      }
+      if(queued)toast('已加入 '+queued+' 个上传任务');
+    }catch(error){toast('本机文件接收中断：'+error.message,true);}
+    finally{uploadButton.disabled=false;refreshDownloads();}
+  };
+
+  return {element,close(){
+    usageVersion++;
+    release(filePage?.cursor);
+    element.remove();
+  }};
+}
 
 const copyDialog=$('#server-copy-dialog'),copyForm=$('#server-copy-form');
 let copySource=null;
@@ -724,7 +839,7 @@ async function boot(){
     // Join live PTYs for viewing. Saved, disconnected screens still require
     // deliberate reconnection and the existing forwarding choice.
     await workspaceSync.sync(data);
-    setFilesOpen(!mobile?.isMobile()&&localStorage.getItem('sd-files-open')==='1');renderSidebar();currentWindows().forEach(fit);refreshDownloads();clearInterval(downloadsTimer);downloadsTimer=setInterval(refreshDownloads,1800);pollSSHAuth();clearInterval(authTimer);authTimer=setInterval(pollSSHAuth,500);clearInterval(workspaceTimer);workspaceTimer=setInterval(syncWorkspace,1500);return true;
+    restoreFileBrowsers();updateFileBrowsers();renderSidebar();currentWindows().forEach(fit);refreshDownloads();clearInterval(downloadsTimer);downloadsTimer=setInterval(refreshDownloads,1800);pollSSHAuth();clearInterval(authTimer);authTimer=setInterval(pollSSHAuth,500);clearInterval(workspaceTimer);workspaceTimer=setInterval(syncWorkspace,1500);return true;
   }catch(error){if(error.status===403){sessionStorage.removeItem('sd-token');localStorage.removeItem('sd-access-token');token=null;showDialog($('#access-dialog'));errorIn($('#access-dialog'),'链接或密钥已失效，请从电脑获取新的手机访问链接。');}else{$('#app-status').textContent=error.message;$('#app-status').classList.add('fatal');toast(error.message,true);}return false;}
 }
 

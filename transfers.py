@@ -452,20 +452,13 @@ class TransferManager:
     def list_directory(self, profile, path, forwarding, cursor_id=None):
         if not isinstance(path, str) or "\x00" in path or len(path) > 8192:
             raise SFTPError("远程路径无效")
-        old_clients = []
         with self.lock:
             if cursor_id:
                 cursor = self.cursors.get(cursor_id)
                 if not cursor or cursor.profile != profile or cursor.forwarding != forwarding:
                     raise SFTPError("目录分页连接已失效，请从头刷新当前目录")
-            else:
-                # Keep at most four live directory handles; never cache a directory tree.
-                for key, old in list(self.cursors.items()):
-                    if old.profile == profile or len(self.cursors) >= 4:
-                        old_clients.append(old.client)
-                        del self.cursors[key]
-        for old in old_clients:
-            old.close()
+            elif len(self.cursors) >= 32:
+                raise SFTPError("打开的目录过多，请关闭不用的文件面板后重试")
         if not cursor_id:
             # Network I/O never holds the transfer manager's global state lock.
             client = SFTP(self.workspace, profile, forwarding, purpose="读取文件列表")
@@ -491,6 +484,16 @@ class TransferManager:
                 self.cursors.pop(cursor_id, None)
             cursor.client.close()
         return result
+
+    def close_cursor(self, profile_id, cursor_id):
+        if not isinstance(cursor_id, str):
+            return
+        with self.lock:
+            cursor = self.cursors.get(cursor_id)
+            if not cursor or cursor.profile["id"] != profile_id:
+                return
+            self.cursors.pop(cursor_id)
+        cursor.client.close()
 
     def create(self, profile, path, forwarding):
         if not isinstance(path, str) or not path.startswith("/") or "\x00" in path:

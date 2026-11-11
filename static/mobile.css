@@ -4,7 +4,6 @@
 #sidebar-toggle:hover{background:var(--terminal-hover)}
 @media(min-width:741px){
   .desktop-sidebar-hidden .sidebar{display:none}
-  .desktop-sidebar-hidden #file-drawer{left:0;max-width:min(760px,100vw)}
 }
 .manual-terminal-input #mobile-keys{display:flex}
 #mobile-keys{flex:none;overflow-x:auto;gap:5px;padding:5px 7px max(5px,env(safe-area-inset-bottom));background:var(--terminal-bar);border-top:1px solid var(--terminal-border);scrollbar-width:none}
@@ -53,7 +52,9 @@
   .resize-handle{display:none}.window-footer{min-height:32px;height:32px;gap:6px;padding:0 7px}.window-footer .remote-ref{display:none}
   .window-footer button{min-height:28px;font-size:11px}.window-footer>span{font-size:10px}
   .terminal-content{min-height:0;border-radius:0}.terminal-content .xterm{padding:5px 2px 2px 5px}
-  .statusbar{display:none}#file-drawer{position:fixed;inset:0;width:100%!important;max-width:100%;z-index:202;box-shadow:none;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}#file-drawer-resize{display:none}
+  .statusbar{display:none}#file-drawer{position:fixed;inset:0;width:100%!important;max-width:100%;z-index:202;box-shadow:none;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}.file-drawer-resize{display:none}
+  #file-browsers{scroll-snap-type:x mandatory}
+  .file-browser{width:100%!important;max-width:100%;scroll-snap-align:start}
   .file-nav input{font-size:16px}.file-list{overflow:auto}.file-item{min-height:42px}
   dialog{max-width:calc(100vw - 20px)!important;width:calc(100vw - 20px);max-height:calc(var(--app-height,100dvh) - 24px);padding:20px;overflow:auto}
   dialog input,dialog select,dialog textarea{font-size:16px}dialog .primary-button,dialog .secondary-button,dialog .text-button{min-height:42px}

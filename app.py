@@ -434,6 +434,16 @@ class Workspace:
     def run_ssh(self, profile, command, forwarding, purpose, timeout):
         return self.auth.run(self.ssh_args(profile, True, forwarding) + [command], profile, purpose, timeout)
 
+    def file_disk(self, profile, path, forwarding):
+        if not isinstance(path, str) or not path.startswith("/") or "\x00" in path or len(path) > 8192:
+            raise UserError("请先打开有效的目录")
+        command = remote_deadline_shell() + "export LC_ALL=C\nsd_run df -Pk " + shlex.quote(path)
+        result = self.run_ssh(profile, command, forwarding, "查看磁盘空间", 12)
+        output = result.stdout.decode("utf-8", "replace")
+        match = re.search(r"\s(\d+)\s+\d+\s+(-?\d+)\s+\d+%\s", output)
+        disk = dict(total=int(match[1]) * 1024, available=max(0, int(match[2])) * 1024) if result.returncode == 0 and match else None
+        return dict(disk=disk)
+
     def new_session(self, data):
         with self.lock:
             forwarding = data.get("forwarding", False)
@@ -1288,6 +1298,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 workspace.forwarding_choices[profile["id"]] = data["forwarding"]
                 result = workspace.transfers.list_directory(profile, data.get("path", "."), data["forwarding"], data.get("cursor"))
                 return self.response(200, result)
+            if path == "/api/files/disk":
+                forwarding = data.get("forwarding")
+                if not isinstance(forwarding, bool):
+                    raise UserError("请选择本次转发方式")
+                profile = workspace.require_active(data.get("profile_id"), forwarding)
+                return self.response(200, workspace.file_disk(
+                    profile, data.get("path"), forwarding))
+            if path == "/api/files/close":
+                workspace.transfers.close_cursor(data.get("profile_id"), data.get("cursor"))
+                return self.response(200, dict(ok=True))
             if path == "/api/downloads":
                 profile = workspace.require_active(data.get("profile_id"), data.get("forwarding"))
                 if not profile or not isinstance(data.get("forwarding"), bool):
