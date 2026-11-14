@@ -38,6 +38,9 @@ class PasswordSSHTests(unittest.TestCase):
                           ' GlobalKnownHostsFile none\n StrictHostKeyChecking ask\n PubkeyAuthentication no\n'
                           ' PreferredAuthentications keyboard-interactive,password\n PasswordAuthentication yes\n'
                           ' KbdInteractiveAuthentication yes\n NumberOfPasswordPrompts 2\n', encoding="utf-8")
+        downloads = mock.patch("transfers.downloads_directory", return_value=self.root/"downloads")
+        downloads.start()
+        self.addCleanup(downloads.stop)
         self.ws = app.Workspace(self.root/"client"/"data", ssh_config=config)
         self.profile = app.clean_profile(dict(host="127.0.0.1", user="fixture", port=str(self.fixture.port), name="隔离密码服务器"))
         self.ws.profiles.append(self.profile)

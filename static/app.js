@@ -38,7 +38,7 @@ const workspaceSync=new WorkspaceSync({
     for(const win of windows.values()){
       const record=sessions.find(record=>record.id===win.record.id);
       if(record)Object.assign(win.record,record);
-      win.element.hidden=win.record.profile_id!==selectedProfile;
+      win.element.hidden=win.record.profile_id!==selectedProfile||!!win.minimized;
     }
   },
   open:record=>openSession(record,false,false),
@@ -84,7 +84,7 @@ async function switchProfile(profile){
   mobile?.closeMenu();
   selectedProfile=profile.id;sessionStorage.setItem('sd-profile',profile.id);
   updateFileBrowsers();
-  for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile;
+  for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile||!!win.minimized;
   for(const record of currentSessions())if(record.layout?.visible&&!windows.has(record.id))await openSession(record,false);
   updateCanvas();currentWindows().forEach(fit);renderSidebar();refreshDownloads();
 }
@@ -202,6 +202,7 @@ function renderSidebar() {
   $('#workspace-summary').textContent=currentWindows().length ? currentWindows().length+' 个窗口 · '+connected+' 个连接' : '尚未打开窗口';
   $('#empty-state').hidden=currentWindows().length>0;
   const profile=profiles.find(p=>p.id===selectedProfile);$('#connection-label').textContent=profile?profile.name+' · '+profile.host:'终端工作台';$('#connection-state').textContent=connections.has(selectedProfile)?'连接保留':'未连接';$('#close-server').disabled=!profile;$('#scan-screens').disabled=!profile;
+  renderMinimized();
   mobile?.render(currentWindows(),selectedWindow);
 }
 
@@ -212,7 +213,7 @@ function openServer(profile = null) {
   $('#delete-server').hidden=!profile;
   showDialog($('#server-dialog'));
 }
-$('#add-server').onclick=async()=>{try{const data=await api('/api/profiles/reload',{});absorb(data);if(!profiles.some(p=>p.id===selectedProfile))selectedProfile=profiles[0]?.id||null;for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile;updateFileBrowsers();renderSidebar();toast(data.config_notes?.length?data.config_notes.join('\n'):'SSH config 已重新读取');}catch(error){toast(error.message,true);}};
+$('#add-server').onclick=async()=>{try{const data=await api('/api/profiles/reload',{});absorb(data);if(!profiles.some(p=>p.id===selectedProfile))selectedProfile=profiles[0]?.id||null;for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile||!!win.minimized;updateFileBrowsers();renderSidebar();toast(data.config_notes?.length?data.config_notes.join('\n'):'SSH config 已重新读取');}catch(error){toast(error.message,true);}};
 $('#server-form').onsubmit=async event=>{
   event.preventDefault(); const dialog=$('#server-dialog'), form=event.target;
   const button=$('[type=submit]',form); button.disabled=true;
@@ -253,7 +254,12 @@ $('#new-form').onsubmit=async event=>{
 };
 
 function saveLayout(win) {
-  const layout={...win.geometry,fontSize:win.term.options.fontSize,visible:true};
+  const viewport=$('#viewport');
+  const base=win.maximized&&win.layoutReference?win.layoutReference:win.geometry;
+  const layout={...base,fontSize:win.term.options.fontSize,visible:true,
+    minimized:!!win.minimized,viewportWidth:win.maximized?base.viewportWidth:Math.max(1,viewport.clientWidth),
+    viewportHeight:win.maximized?base.viewportHeight:Math.max(1,viewport.clientHeight)};
+  win.layoutReference={...layout};
   win.record.layout=layout;
   clearTimeout(win.saveTimer);
   win.saveTimer=setTimeout(()=>api('/api/sessions/'+win.record.id+'/layout',layout).catch(error=>{if(!shuttingDown)toast('布局保存失败：'+error.message,true);}),250);
@@ -276,16 +282,18 @@ function sizeReader(win){
   requestAnimationFrame(()=>{if(win.canControl||!win.element.isConnected)return;const screen=$('.xterm-screen',win.element),style=getComputedStyle(win.term.element);if(screen?.offsetWidth){win.term.element.style.width=(screen.offsetWidth+parseFloat(style.paddingLeft)+parseFloat(style.paddingRight))+'px';win.term.element.style.height=(screen.offsetHeight+parseFloat(style.paddingTop)+parseFloat(style.paddingBottom))+'px';}});
 }
 function applyGeometry(win, geometry, persist=true) {
-  win.geometry={x:Math.max(0,Math.round(geometry.x)),y:Math.max(0,Math.round(geometry.y)),width:Math.max(380,Math.round(geometry.width)),height:Math.max(220,Math.round(geometry.height))};
+  win.geometry={x:Math.max(0,Math.round(geometry.x)),y:Math.max(0,Math.round(geometry.y)),width:Math.max(160,Math.round(geometry.width)),height:Math.max(120,Math.round(geometry.height))};
   const g=win.geometry;Object.assign(win.element.style,{left:g.x+'px',top:g.y+'px',width:g.width+'px',height:g.height+'px'});
   updateCanvas();fit(win);if(persist)saveLayout(win);
 }
 function updateCanvas() {
   let width=$('#viewport').clientWidth,height=$('#viewport').clientHeight;
-  if(!mobile?.isMobile())for(const win of currentWindows()){width=Math.max(width,win.geometry.x+win.geometry.width+18);height=Math.max(height,win.geometry.y+win.geometry.height+18);}
+  if(!mobile?.isMobile())for(const win of currentWindows().filter(win=>!win.minimized)){width=Math.max(width,win.geometry.x+win.geometry.width+18);height=Math.max(height,win.geometry.y+win.geometry.height+18);}
   Object.assign($('#canvas').style,{width:width+'px',height:height+'px'});
 }
 function focusWindow(win, scroll=false, focusTerm=true) {
+  if(win.minimized)setMinimized(win,false);
+
   if(selectedWindow!==win.record.id)windows.get(selectedWindow)?.inputGate.close();
   selectedWindow=win.record.id;windows.forEach(w=>w.element.classList.toggle('focused',w===win));win.element.style.zIndex=++zIndex;
   renderSidebar();if(scroll&&!mobile?.isMobile())win.element.scrollIntoView({block:'nearest',inline:'nearest'});if(focusTerm&&!mobile?.manualInput())win.term.focus();fit(win);
@@ -308,9 +316,10 @@ async function openSession(record, shouldConnect, focus=true) {
     const forwarding=el('select','window-forwarding');forwarding.title='本窗口端口转发；更改后仅此窗口分离并重新连接';forwarding.setAttribute('aria-label',record.name+' 端口转发');
     for(const [value,text] of [['0','转发:关'],['1','转发:开']]){const option=el('option','',text);option.value=value;forwarding.append(option);}forwarding.value=record.forwarding?'1':'0';
     const diagnose=el('button','diagnose-button','诊断');diagnose.title='只检查当前 screen，不结束任务';
-    const fontMinus=el('button','font-button','A−'),fontPlus=el('button','font-button','A＋'),maximize=el('button','window-maximize'),close=el('button','window-close','×');
+    const fontMinus=el('button','font-button','A−'),fontPlus=el('button','font-button','A＋'),maximize=el('button','window-maximize'),minimize=el('button','window-minimize','−'),close=el('button','window-close','×');
+    minimize.title='最小化窗口';minimize.setAttribute('aria-label','最小化窗口');
     fontMinus.title='缩小字号';fontPlus.title='增大字号';close.title='分离或结束 screen';
-    actions.append(forwarding,diagnose,fontMinus,fontPlus,maximize,close);header.append(actions);
+    actions.append(forwarding,diagnose,fontMinus,fontPlus,minimize,maximize,close);header.append(actions);
     const content=el('div','terminal-content'),footer=el('div','window-footer');
     const dot=el('i','state-dot'),stateLabel=el('span'),reconnect=el('button','window-reconnect','重新连接'),refLabel=el('span','remote-ref');
     const review=el('button','window-review','回看'),live=el('button','window-live','回到底部');review.title='回看本窗口已收到的内容；滚轮 / Shift+PageUp 翻页';live.hidden=true;
@@ -329,6 +338,8 @@ async function openSession(record, shouldConnect, focus=true) {
     TerminalView.installScreenHistory(term,end=>{
       if(win.hasOutput&&end)win.historyArchive=TerminalView.history(term,win.historyArchive,end);
     });
+    win.minimized=!!record.layout?.minimized;
+    win.element.hidden=record.profile_id!==selectedProfile||win.minimized;
     win.maximizeButton=maximize;
     setMaximized(win,false);
     win.inputGate=ScreenDeskMobile.bindInput(input,()=>mobile.render(currentWindows(),selectedWindow));
@@ -345,12 +356,19 @@ async function openSession(record, shouldConnect, focus=true) {
     diagnose.onclick=async()=>{showDialog($('#diagnostic-dialog'));$('#diagnostic-output').textContent='正在检查当前会话…';try{const result=await api('/api/sessions/'+record.id+'/diagnose',{});$('#diagnostic-output').textContent=result.output||'服务器没有返回诊断输出';}catch(error){$('#diagnostic-output').textContent=error.message;}};
     const offset=(windows.size-1)%7*28;
     applyGeometry(win,{x:record.layout?.x??(22+offset),y:record.layout?.y??(20+offset),width:record.layout?.width??Math.max(360,Math.min(760,$('#viewport').clientWidth-48)),height:record.layout?.height??Math.max(250,Math.min(470,$('#viewport').clientHeight-48))},false);
+    const saved=record.layout||{};
+    const peers=currentSessions().map(item=>item.layout||{});
+    const viewport=$('#viewport');
+    win.layoutReference={...win.geometry,
+      viewportWidth:saved.viewportWidth||Math.max(viewport.clientWidth,...peers.map(g=>(g.x||0)+(g.width||0)+18)),
+      viewportHeight:saved.viewportHeight||Math.max(viewport.clientHeight,...peers.map(g=>(g.y||0)+(g.height||0)+18))};
+    fitLayout();
     TerminalInput.install(term,data=>send(win,data));
     element.addEventListener('pointerdown',event=>focusWindow(win,false,!event.target.closest('button,select,.terminal-history')));
     header.addEventListener('pointerdown',event=>{if(!event.target.closest('button,select'))startDrag(event,win,'move');});
     header.ondblclick=event=>{if(!event.target.closest('button,select'))toggleMaximize(win);};
     for(const direction of ['n','s','e','w','ne','nw','se','sw']){const handle=el('div','resize-handle resize-'+direction);handle.onpointerdown=event=>startDrag(event,win,direction);element.append(handle);}
-    fontMinus.onclick=()=>changeFont(win,-1);fontPlus.onclick=()=>changeFont(win,1);maximize.onclick=()=>toggleMaximize(win);close.onclick=()=>openClose(win);
+    fontMinus.onclick=()=>changeFont(win,-1);fontPlus.onclick=()=>changeFont(win,1);minimize.onclick=()=>setMinimized(win,true);maximize.onclick=()=>toggleMaximize(win);close.onclick=()=>openClose(win);
     reconnect.onclick=()=>reconnectWindow(win);
     term.attachCustomKeyEventHandler(event=>{
       if(win.scroller.key(event))return false;
@@ -366,6 +384,7 @@ async function openSession(record, shouldConnect, focus=true) {
   }
   if(focus)focusWindow(win,true,!mobile?.isMobile());
   if(shouldConnect && (!win.ws || win.ws.readyState>1)) {workspaceSync.resume(win.record.id);await reconnectWindow(win);}
+  renderMinimized();
   return win;
 }
 function send(win,data) {if(['input','resize'].includes(data.type)&&!win.canControl)return;if(win.ws?.readyState===WebSocket.OPEN)win.ws.send(JSON.stringify(data));}
@@ -460,13 +479,14 @@ function changeFont(win,delta){win.term.options.fontSize=Math.max(10,Math.min(28
 function setMaximized(win,maximized){
   win.maximized=maximized;
   win.element.classList.toggle('maximized',maximized);
+  queueLayoutFit();
   const label=maximized?'还原窗口':'最大化窗口';
   win.maximizeButton.title=label;
   win.maximizeButton.setAttribute('aria-label',label);
 }
 function toggleMaximize(win){
   if(!win.maximized){win.restoreGeometry={...win.geometry};setMaximized(win,true);applyGeometry(win,{x:$('#viewport').scrollLeft+10,y:$('#viewport').scrollTop+10,width:Math.max(320,$('#viewport').clientWidth-24),height:Math.max(220,$('#viewport').clientHeight-24)},false);}
-  else{setMaximized(win,false);applyGeometry(win,win.restoreGeometry);}
+  else{setMaximized(win,false);fitLayout();}
   focusWindow(win);
 }
 function startDrag(event,win,direction){
@@ -632,10 +652,56 @@ $('#confirm-close-server').onclick=async()=>{
 };
 $('#tile-windows').onclick=()=>{
   const all=currentWindows();if(!all.length)return;const columns=Math.max(1,Math.min(all.length,Math.floor($('#viewport').clientWidth/400))),rows=Math.ceil(all.length/columns),width=Math.max(320,Math.floor(($('#viewport').clientWidth-32)/columns)-12),height=Math.max(220,Math.floor(($('#viewport').clientHeight-32)/rows)-12);
-  all.forEach((win,i)=>{setMaximized(win,false);applyGeometry(win,{x:16+(i%columns)*(width+12),y:16+Math.floor(i/columns)*(height+12),width,height});});$('#viewport').scrollTo(0,0);
+  all.forEach((win,i)=>{if(win.minimized)setMinimized(win,false);setMaximized(win,false);applyGeometry(win,{x:16+(i%columns)*(width+12),y:16+Math.floor(i/columns)*(height+12),width,height});});$('#viewport').scrollTo(0,0);
 };
 $('#cascade-windows').onclick=()=>{currentWindows().forEach((win,i)=>{setMaximized(win,false);applyGeometry(win,{x:22+i%10*28,y:20+i%10*28,width:Math.max(360,Math.min(760,$('#viewport').clientWidth-64)),height:Math.max(250,Math.min(470,$('#viewport').clientHeight-64))});});};
-window.addEventListener('resize',()=>{updateCanvas();windows.forEach(fit);});
+var minimizedBar=el('div','minimized-windows');
+minimizedBar.setAttribute('aria-label','已最小化的终端');
+minimizedBar.hidden=true;
+$('#viewport').after(minimizedBar);
+function renderMinimized(){
+  if(!minimizedBar)return;
+  minimizedBar.replaceChildren();
+  for(const win of currentWindows().filter(win=>win.minimized)){
+    const button=el('button','secondary-button',win.record.name+' ↗');
+    button.title='还原 '+win.record.name;
+    button.onclick=()=>{setMinimized(win,false);focusWindow(win);};
+    minimizedBar.append(button);
+  }
+  minimizedBar.hidden=!minimizedBar.childElementCount;
+}
+function setMinimized(win,minimized){
+  win.minimized=minimized;
+  win.element.hidden=minimized||win.record.profile_id!==selectedProfile;
+  if(minimized)win.inputGate.close();
+  saveLayout(win);
+  renderSidebar();queueLayoutFit();
+}
+function fitLayout(){
+  if(mobile?.isMobile())return;
+  const viewport=$('#viewport'),width=viewport.clientWidth,height=viewport.clientHeight;
+  if(width<1||height<1)return;
+  for(const win of currentWindows()){
+    const reference=win.layoutReference;
+    if(!reference||win.dragging)continue;
+    const scaleX=width/reference.viewportWidth,scaleY=height/reference.viewportHeight;
+    const g=win.maximized?{x:8,y:8,width:width-16,height:height-16}:
+      {x:reference.x*scaleX,y:reference.y*scaleY,width:reference.width*scaleX,height:reference.height*scaleY};
+    g.width=Math.min(width,Math.max(Math.min(160,width),g.width));
+    g.height=Math.min(height,Math.max(Math.min(120,height),g.height));
+    g.x=Math.max(0,Math.min(g.x,width-g.width));
+    g.y=Math.max(0,Math.min(g.y,height-g.height));
+    applyGeometry(win,g,false);
+  }
+  viewport.scrollTo(0,0);
+}
+var layoutFrame=null;
+function queueLayoutFit(){
+  if(layoutFrame!==null)return;
+  layoutFrame=requestAnimationFrame(()=>{layoutFrame=null;fitLayout();});
+}
+new ResizeObserver(queueLayoutFit).observe($('#viewport'));
+window.addEventListener('resize',queueLayoutFit);
 window.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();if(!$('dialog[open]'))openNew();}});
 $('#workspace-nav').onclick=()=>$('#viewport').scrollTo(0,0);$('.brand').onclick=event=>{event.preventDefault();$('#viewport').scrollTo(0,0);};
 $('#help-button').onclick=()=>showDialog($('#help-dialog'));
@@ -645,6 +711,19 @@ $('#confirm-quit').onclick=async()=>{
 };
 
 function humanSize(size){if(size==null)return '未知大小';if(size<1024)return size+' B';const power=Math.min(4,Math.floor(Math.log(size)/Math.log(1024)));return (size/1024**power).toFixed(1)+' '+['B','KB','MB','GB','TB'][power];}
+async function copyFilePath(text){
+  const field=el('textarea');
+  field.value=text;
+  Object.assign(field.style,{position:'fixed',left:'-10000px',top:'0'});
+  document.body.append(field);field.select();
+  let copied=false;
+  try{copied=document.execCommand('copy');}catch(_){}
+  field.remove();
+  try{
+    if(!copied)await navigator.clipboard.writeText(text);
+    toast('路径已复制');
+  }catch(_){toast('复制失败，请选中路径栏后使用复制快捷键。',true);}
+}
 function remoteJoin(path,name){return (path==='/'?'':path)+'/'+name;}
 const fileBrowsers=new Map();
 const fileDock=$('#file-drawer'),fileServer=$('#file-server');
@@ -704,6 +783,10 @@ function createFileBrowser(fileProfile){
   $('.file-server-name').textContent=fileProfile.name;
   element.setAttribute('aria-label',fileProfile.name+' 文件列表');
   $('.collapse-files').onclick=()=>closeFileBrowser(fileProfile.id);
+  const pathCopy=el('button','copy-file-path','复制路径');
+  pathCopy.type='button';
+  pathCopy.onclick=()=>copyFilePath(filePage?.path||$('.remote-path').value.trim()||'.');
+  $('.file-nav').append(pathCopy);
 
   function release(cursor){
     if(cursor)api('/api/files/close',{profile_id:fileProfile.id,cursor}).catch(()=>{});
@@ -778,6 +861,11 @@ function createFileBrowser(fileProfile){
     function row(item){const e=el('div','file-row');const name=el('button','file-name');name.title=item.name;name.append(el('span','file-icon',item.kind==='directory'?'▸':item.kind==='link'?'↗':'·'),el('span','file-basename',item.name));
       name.onclick=()=>{if(item.unsupported)return toast('此文件名不是 UTF-8，无法安全操作。',true);if(item.kind==='directory'||item.kind==='link')readFiles(false,remoteJoin(filePage.path,item.name));};
       e.append(name);
+      const copyPath=el('button','file-download','⧉');
+      copyPath.title='复制完整路径';
+      copyPath.setAttribute('aria-label','复制 '+item.name+' 的完整路径');
+      copyPath.onclick=()=>copyFilePath(remoteJoin(filePage.path,item.name));
+      e.append(copyPath);
       const size=el('span','file-size');
       if(item.kind!=='directory'&&!item.unsupported){
         size.textContent=item.size==null?'—':humanSize(item.size);

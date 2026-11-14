@@ -86,8 +86,11 @@ def clean_layout(data):
     result = {}
     if "visible" in data:
         result["visible"] = bool(data["visible"])
+    if "minimized" in data:
+        result["minimized"] = bool(data["minimized"])
     for key, low, high in (("x", 0, 20000), ("y", 0, 20000),
-                           ("width", 320, 12000), ("height", 220, 12000),
+                           ("width", 160, 12000), ("height", 120, 12000),
+                           ("viewportWidth", 1, 20000), ("viewportHeight", 1, 20000),
                            ("fontSize", 10, 28)):
         if key in data:
             result[key] = bounded_int(data[key], low, high, key)
@@ -1235,7 +1238,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.response(404, dict(error="文件尚未下载完成"))
         path = Path(job["local_path"])
         try:
-            if path.is_symlink() or path.resolve().parent != manager.folder.resolve():
+            if path.is_symlink() or path.resolve().parent not in (manager.folder.resolve(),
+                    (self.server.workspace.data_dir.parent / "downloads").resolve()):
                 raise OSError("Invalid download path")
             stream = path.open("rb")
         except OSError:

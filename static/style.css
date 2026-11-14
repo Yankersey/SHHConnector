@@ -122,3 +122,11 @@
 .file-disk {color: #b5c8ce; font-variant-numeric: tabular-nums}
 .file-row .file-name {min-width: 0}
 .file-row .file-download {flex-shrink: 0}
+
+.terminal-window {min-width:160px;min-height:120px}
+.terminal-window[hidden] {display:none}
+.minimized-windows {display:flex;flex:none;gap:6px;padding:5px 10px;background:var(--terminal-bar);overflow-x:auto}
+.minimized-windows[hidden] {display:none}
+.minimized-windows button {flex:none;padding:5px 10px;font-size:11px}
+.copy-file-path {flex:none;background:transparent;color:inherit;font-size:10px;padding:3px}
+.window-actions .window-minimize {font-size:17px}

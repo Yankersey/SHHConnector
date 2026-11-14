@@ -8,6 +8,29 @@ import sys
 import webbrowser
 
 
+def downloads_directory():
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        import uuid
+
+        identifier = uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le
+        guid = (ctypes.c_ubyte * 16).from_buffer_copy(identifier)
+        path = ctypes.c_void_p()
+        shell = ctypes.windll.shell32
+        shell.SHGetKnownFolderPath.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.HANDLE,
+                                             ctypes.POINTER(ctypes.c_void_p)]
+        result = shell.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(path))
+        if result != 0:
+            raise OSError("无法获取 Windows 下载文件夹")
+        try:
+            return Path(ctypes.wstring_at(path))
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+            ctypes.windll.ole32.CoTaskMemFree(path)
+    return Path.home() / "Downloads"
+
+
 def is_wsl():
     if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
         return True

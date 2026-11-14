@@ -103,6 +103,9 @@ class TunnelTests(unittest.TestCase):
 class MobileHTTPTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
+        downloads = mock.patch("transfers.downloads_directory", return_value=Path(self.folder.name)/"downloads")
+        downloads.start()
+        self.addCleanup(downloads.stop)
         self.ws = app.Workspace(Path(self.folder.name)/"data", ssh_config=False)
         self.server = app.Server(0, self.ws)
         self.server.mobile.origin = "https://isolated-fixture.trycloudflare.com"

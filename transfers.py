@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import uuid
-from platform_support import reveal_local
+from platform_support import reveal_local, downloads_directory
 from local_runtime import WINDOWS, background_options
 from pipe_io import TimedPipes
 from ssh_auth import AuthError
@@ -396,7 +396,7 @@ class TransferManager:
         self.workspace = workspace
         self.lock = threading.RLock()
         self.jobs_file = workspace.data_dir / "downloads.json"
-        self.folder = workspace.data_dir.parent / "downloads"
+        self.folder = downloads_directory()
         self.folder.mkdir(parents=True, exist_ok=True)
         self.jobs = []
         self.workers = {}

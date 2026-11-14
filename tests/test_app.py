@@ -105,6 +105,9 @@ class AppTests(unittest.TestCase):
 
     def setUp(self):
         self.temp=Path(tempfile.mkdtemp(dir=str(self.folder)))
+        downloads = mock.patch("transfers.downloads_directory", return_value=self.temp/'downloads')
+        downloads.start()
+        self.addCleanup(downloads.stop)
         self.ws=app.Workspace(self.temp/'data',ssh_config=False)
         self.profile=app.clean_profile({'host':'isolated-test','name':'测试服务器'})
         self.ws.profiles.append(self.profile)

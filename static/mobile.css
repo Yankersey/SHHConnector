@@ -63,3 +63,5 @@
   .mobile-keyboard-open .workspace-toolbar,.mobile-keyboard-open .window-actions{display:none}
   .mobile-keyboard-open .window-titlebar{min-height:28px}
 }
+
+@media(max-width:740px){.window-actions .window-minimize{display:none}.minimized-windows{display:none}}
