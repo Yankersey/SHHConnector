@@ -49,7 +49,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>ScreenDesk</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>ScreenDesk.icns</string>
-  <key>CFBundleVersion</key><string>3</string>
+  <key>CFBundleVersion</key><string>4</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSDocumentsFolderUsageDescription</key><string>ScreenDesk 需要打开保存在「文稿」中的项目和工作区。</string>
 </dict>

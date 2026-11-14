@@ -41,7 +41,7 @@ private final class LocalRequests: NSObject, URLSessionTaskDelegate {
 }
 
 @MainActor
-private final class ScreenDeskApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate {
+private final class ScreenDeskApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
     private var window: NSWindow?
     private var browser: WKWebView?
     private var workspace: LocalWorkspace?
@@ -226,9 +226,29 @@ private final class ScreenDeskApp: NSObject, NSApplicationDelegate, NSWindowDele
         self.workspace = workspace
         let browser = WKWebView()
         browser.navigationDelegate = self
+        browser.uiDelegate = self
         self.browser = browser
         window.contentView = browser
         browser.load(URLRequest(url: workspace.url))
+    }
+
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping ([URL]?) -> Void) {
+        guard webView === browser, let window,
+              let origin = frame.request.url, workspace?.contains(origin) == true else {
+            completionHandler(nil)
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "选择要上传的文件"
+        panel.prompt = "选择"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.beginSheetModal(for: window) { response in
+            completionHandler(response == .OK ? panel.urls : nil)
+        }
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
