@@ -65,3 +65,13 @@
 }
 
 @media(max-width:740px){.window-actions .window-minimize{display:none}.minimized-windows{display:none}}
+
+@media(max-width:740px){
+  .topbar {height:50px;min-height:50px;flex-wrap:nowrap;padding:env(safe-area-inset-top) 4px 0;gap:2px}
+  .topbar-start {flex:0 1 100px}
+  .topbar .workspace-controls {height:44px}
+  .topbar .workspace-controls button {min-height:40px;padding:4px 7px}
+  .topbar-actions #theme-mode {width:75px}
+  .minimized-windows:not([hidden]) {display:flex}
+  .mobile-keyboard-open .topbar .workspace-controls {display:none}
+}

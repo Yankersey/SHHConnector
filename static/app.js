@@ -38,7 +38,7 @@ const workspaceSync=new WorkspaceSync({
     for(const win of windows.values()){
       const record=sessions.find(record=>record.id===win.record.id);
       if(record)Object.assign(win.record,record);
-      win.element.hidden=win.record.profile_id!==selectedProfile||!!win.minimized;
+      win.element.hidden=!!win.minimized;
     }
   },
   open:record=>openSession(record,false,false),
@@ -61,7 +61,16 @@ async function syncWorkspace(){
   }finally{workspacePolling=false;}
 }
 function currentSessions(){return sessions.filter(r=>r.profile_id===selectedProfile&&r.state!=='ended');}
-function currentWindows(){return [...windows.values()].filter(w=>w.record.profile_id===selectedProfile);}
+function currentWindows(){return [...windows.values()];}
+function serverWindows(){return currentWindows().filter(win=>win.record.profile_id===selectedProfile);}
+function serverAccent(profile){
+  const ordered=profiles.slice().sort((a,b)=>a.host.localeCompare(b.host)||a.id.localeCompare(b.id));
+  const index=Math.max(0,ordered.findIndex(item=>item.id===profile.id));
+  return 'hsl('+Math.round(index*137.508%360)+' 65% 45%)';
+}
+function applyServerColor(element,profile){
+  element.style.setProperty('--server-color',serverAccent(profile));
+}
 function absorb(data){
   profiles=data.profiles;const incoming=new Set(data.sessions.map(r=>r.id));
   sessions=sessions.filter(r=>incoming.has(r.id));
@@ -84,8 +93,10 @@ async function switchProfile(profile){
   mobile?.closeMenu();
   selectedProfile=profile.id;sessionStorage.setItem('sd-profile',profile.id);
   updateFileBrowsers();
-  for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile||!!win.minimized;
+  for(const win of windows.values())win.element.hidden=!!win.minimized;
   for(const record of currentSessions())if(record.layout?.visible&&!windows.has(record.id))await openSession(record,false);
+  const target=serverWindows().filter(win=>!win.minimized).sort((a,b)=>(Number(b.element.style.zIndex)||0)-(Number(a.element.style.zIndex)||0))[0];
+  if(target)focusWindow(target);
   updateCanvas();currentWindows().forEach(fit);renderSidebar();refreshDownloads();
 }
 
@@ -168,11 +179,13 @@ $$('[data-auth-cancel]').forEach(button=>button.onclick=()=>answerSSHAuth(true))
 $('#ssh-auth-dialog').addEventListener('cancel',event=>{event.preventDefault();answerSSHAuth(true);});
 
 function renderSidebar() {
+  for(const win of windows.values())applyServerColor(win.element,win.record.profile);
   const servers = $('#server-list'); servers.replaceChildren();
   if (!profiles.length) servers.append(el('div', 'sidebar-placeholder', 'SSH config 中没有具体 Host 别名，添加后点击 ↻ 刷新。'));
   for (const profile of profiles) {
     const row = el('div', 'server-item' + (profile.id === selectedProfile ? ' selected' : ''));
     const select = el('button', 'server-select');
+    applyServerColor(row,profile);
     select.append(el('span','server-symbol','▤'));
     const text = el('span','server-text'); text.append(el('strong','',profile.name),el('small','',profile.host)); select.append(text);
     if(connections.has(profile.id))text.append(el('small','connection-retained','连接保留'));
@@ -196,12 +209,12 @@ function renderSidebar() {
     card.onkeydown = event => { if (event.key==='Enter') card.click(); };
     list.append(card);
   }
-  const connected = currentSessions().filter(r=>r.state==='connected').length;
+  const connected = currentWindows().filter(win=>win.connectionState==='connected').length;
   $('#session-count').textContent=currentSessions().length;
   $('#live-count').textContent=connected+' 个连接';
   $('#workspace-summary').textContent=currentWindows().length ? currentWindows().length+' 个窗口 · '+connected+' 个连接' : '尚未打开窗口';
   $('#empty-state').hidden=currentWindows().length>0;
-  const profile=profiles.find(p=>p.id===selectedProfile);$('#connection-label').textContent=profile?profile.name+' · '+profile.host:'终端工作台';$('#connection-state').textContent=connections.has(selectedProfile)?'连接保留':'未连接';$('#close-server').disabled=!profile;$('#scan-screens').disabled=!profile;
+  const profile=profiles.find(p=>p.id===selectedProfile);$('#connection-label').textContent=profile?profile.name:'终端工作台';$('#connection-label').title=profile?'扫描、核对和关闭操作的服务器 · '+profile.host:'';$('#connection-state').textContent=connections.has(selectedProfile)?'连接保留':'未连接';$('#close-server').disabled=!profile;$('#scan-screens').disabled=!profile;
   renderMinimized();
   mobile?.render(currentWindows(),selectedWindow);
 }
@@ -213,7 +226,7 @@ function openServer(profile = null) {
   $('#delete-server').hidden=!profile;
   showDialog($('#server-dialog'));
 }
-$('#add-server').onclick=async()=>{try{const data=await api('/api/profiles/reload',{});absorb(data);if(!profiles.some(p=>p.id===selectedProfile))selectedProfile=profiles[0]?.id||null;for(const win of windows.values())win.element.hidden=win.record.profile_id!==selectedProfile||!!win.minimized;updateFileBrowsers();renderSidebar();toast(data.config_notes?.length?data.config_notes.join('\n'):'SSH config 已重新读取');}catch(error){toast(error.message,true);}};
+$('#add-server').onclick=async()=>{try{const data=await api('/api/profiles/reload',{});absorb(data);if(!profiles.some(p=>p.id===selectedProfile))selectedProfile=profiles[0]?.id||null;for(const win of windows.values())win.element.hidden=!!win.minimized;updateFileBrowsers();renderSidebar();toast(data.config_notes?.length?data.config_notes.join('\n'):'SSH config 已重新读取');}catch(error){toast(error.message,true);}};
 $('#server-form').onsubmit=async event=>{
   event.preventDefault(); const dialog=$('#server-dialog'), form=event.target;
   const button=$('[type=submit]',form); button.disabled=true;
@@ -265,7 +278,7 @@ function saveLayout(win) {
   win.saveTimer=setTimeout(()=>api('/api/sessions/'+win.record.id+'/layout',layout).catch(error=>{if(!shuttingDown)toast('布局保存失败：'+error.message,true);}),250);
 }
 function fit(win) {
-  if(win.dragging||!win.element.isConnected||win.element.hidden||win.record.profile_id!==selectedProfile) return;
+  if(win.dragging||!win.element.isConnected||win.element.hidden) return;
   if(mobile?.isMobile()&&!win.element.classList.contains('mobile-active'))return;
   if(win.ws&&win.ws.readyState<2&&!win.canControl){sizeReader(win);return;}
   win.term.element.style.width='';win.term.element.style.height='';
@@ -292,6 +305,10 @@ function updateCanvas() {
   Object.assign($('#canvas').style,{width:width+'px',height:height+'px'});
 }
 function focusWindow(win, scroll=false, focusTerm=true) {
+  if(selectedProfile!==win.record.profile_id){
+    selectedProfile=win.record.profile_id;
+    sessionStorage.setItem('sd-profile',selectedProfile);
+  }
   if(win.minimized)setMinimized(win,false);
 
   if(selectedWindow!==win.record.id)windows.get(selectedWindow)?.inputGate.close();
@@ -309,8 +326,10 @@ async function openSession(record, shouldConnect, focus=true) {
   let win=windows.get(record.id);
   if(!win){
     if(!globalThis.Unicode11Addon||!globalThis.FitAddon||!globalThis.SerializeAddon)throw new Error('终端组件未加载完整，请关闭后重新打开工作台。');
-    const element=el('article','terminal-window');element.setAttribute('aria-label',record.name+' 终端窗口');element.hidden=record.profile_id!==selectedProfile;
+    const element=el('article','terminal-window');element.setAttribute('aria-label',record.name+' 终端窗口');element.hidden=false;
     const header=el('div','window-titlebar');
+    applyServerColor(element,record.profile);
+    header.title=record.profile.name+' · '+record.name;
     header.append(el('span','window-symbol','›_'),el('span','window-name',record.name),el('span','window-server',record.profile.name));
     const actions=el('div','window-actions');
     const forwarding=el('select','window-forwarding');forwarding.title='本窗口端口转发；更改后仅此窗口分离并重新连接';forwarding.setAttribute('aria-label',record.name+' 端口转发');
@@ -339,7 +358,7 @@ async function openSession(record, shouldConnect, focus=true) {
       if(win.hasOutput&&end)win.historyArchive=TerminalView.history(term,win.historyArchive,end);
     });
     win.minimized=!!record.layout?.minimized;
-    win.element.hidden=record.profile_id!==selectedProfile||win.minimized;
+    win.element.hidden=win.minimized;
     win.maximizeButton=maximize;
     setMaximized(win,false);
     win.inputGate=ScreenDeskMobile.bindInput(input,()=>mobile.render(currentWindows(),selectedWindow));
@@ -357,7 +376,7 @@ async function openSession(record, shouldConnect, focus=true) {
     const offset=(windows.size-1)%7*28;
     applyGeometry(win,{x:record.layout?.x??(22+offset),y:record.layout?.y??(20+offset),width:record.layout?.width??Math.max(360,Math.min(760,$('#viewport').clientWidth-48)),height:record.layout?.height??Math.max(250,Math.min(470,$('#viewport').clientHeight-48))},false);
     const saved=record.layout||{};
-    const peers=currentSessions().map(item=>item.layout||{});
+    const peers=sessions.filter(item=>item.state!=='ended').map(item=>item.layout||{});
     const viewport=$('#viewport');
     win.layoutReference={...win.geometry,
       viewportWidth:saved.viewportWidth||Math.max(viewport.clientWidth,...peers.map(g=>(g.x||0)+(g.width||0)+18)),
@@ -638,12 +657,12 @@ $('#confirm-close-server').onclick=async()=>{
   const profile=profiles.find(p=>p.id===selectedProfile);
   try{
     const decisions=Object.fromEntries($$('#server-session-choices select').map(select=>[select.dataset.sessionId,select.value]));
-    await Promise.all(currentWindows().map(win=>{clearTimeout(win.saveTimer);return api('/api/sessions/'+win.record.id+'/layout',{...win.geometry,fontSize:win.term.options.fontSize,visible:true});}));
-    const data=await api('/api/close-server',{profile_id:profile.id,decisions,view_ids:Object.fromEntries(currentWindows().map(win=>[win.record.id,win.viewId]))});
+    await Promise.all(serverWindows().map(win=>{clearTimeout(win.saveTimer);return api('/api/sessions/'+win.record.id+'/layout',{...win.record.layout,...win.geometry,fontSize:win.term.options.fontSize,visible:true,minimized:!!win.minimized});}));
+    const data=await api('/api/close-server',{profile_id:profile.id,decisions,view_ids:Object.fromEntries(serverWindows().map(win=>[win.record.id,win.viewId]))});
     const retained=new Set(data.sessions.map(r=>r.id));
     for(const id of [...windows.keys()])if(!retained.has(id))destroyWindow(id);
     absorb(data);
-    for(const win of currentWindows()){win.ws?.close();setState(win,win.record.state,win.record.screen_ref);}
+    for(const win of serverWindows()){win.ws?.close();setState(win,win.record.state,win.record.screen_ref);}
     await switchProfile(profile);dialog.close();toast('服务器已关闭。Detached 窗口保留布局，点“重新连接”才连接。');
   }catch(error){
     const message=error.message;try{const data=await api('/api/workspace');const retained=new Set(data.sessions.map(r=>r.id));for(const id of [...windows.keys()])if(!retained.has(id))destroyWindow(id);absorb(data);renderServerChoices();renderSidebar();}catch(_){}
@@ -663,8 +682,9 @@ function renderMinimized(){
   if(!minimizedBar)return;
   minimizedBar.replaceChildren();
   for(const win of currentWindows().filter(win=>win.minimized)){
-    const button=el('button','secondary-button',win.record.name+' ↗');
-    button.title='还原 '+win.record.name;
+    const button=el('button','secondary-button',win.record.profile.name+' · '+win.record.name+' ↗');
+    applyServerColor(button,win.record.profile);
+    button.title='还原 '+win.record.profile.name+' · '+win.record.name;
     button.onclick=()=>{setMinimized(win,false);focusWindow(win);};
     minimizedBar.append(button);
   }
@@ -672,7 +692,7 @@ function renderMinimized(){
 }
 function setMinimized(win,minimized){
   win.minimized=minimized;
-  win.element.hidden=minimized||win.record.profile_id!==selectedProfile;
+  win.element.hidden=minimized;
   if(minimized)win.inputGate.close();
   saveLayout(win);
   renderSidebar();queueLayoutFit();

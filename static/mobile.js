@@ -101,7 +101,7 @@
       const signature=JSON.stringify(windows.map(win=>[win.record.id,win.record.name]));
       if(signature!==previous){
         select.replaceChildren();
-        for(const win of windows){const option=document.createElement('option');option.value=win.record.id;option.textContent=win.record.name;select.append(option);}
+        for(const win of windows){const option=document.createElement('option');option.value=win.record.id;option.textContent=(win.record.profile?.name?win.record.profile.name+' · ':'')+win.record.name;select.append(option);}
         previous=signature;
       }
       select.disabled=!active;if(active)select.value=active.record.id;
