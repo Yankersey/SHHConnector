@@ -121,8 +121,21 @@ def main():
                 except Exception:
                     pass
                 time.sleep(.1)
-            details = evaluate(window, "({title:document.title,status:document.querySelector('#app-status')?.textContent,toast:document.querySelector('#toast-container')?.textContent,loaded:typeof WorkspaceSync})")
-            raise AssertionError("Timed out: %s %r; resources=%r" % (label, details, resources[window.uid]))
+            details = evaluate(window, """({title:document.title,
+                status:document.querySelector('#app-status')?.textContent,
+                toast:document.querySelector('#toast-container')?.textContent,
+                loaded:typeof WorkspaceSync,hidden:document.hidden,
+                polling:workspacePolling,mutation:workspaceMutation,busy:workspaceSync.busy,
+                attempts:[...workspaceSync.attempts],
+                views:[...windows.values()].map(w=>({id:w.record.id,state:w.connectionState,
+                    socket:w.ws?.readyState,connecting:w.connectingGuard,
+                    replaying:w.sharing?.replaying,attached:w.element.isConnected,
+                    rows:w.term.rows,cols:w.term.cols}))})""")
+            backend = {key: dict(stopped=terminal.stopped,
+                       viewers=len(terminal.ws.viewers), closed=terminal.ws.closed)
+                       for key, terminal in workspace.terminals.items()}
+            raise AssertionError("Timed out: %s %r; backend=%r; resources=%r" %
+                                 (label, details, backend, resources[window.uid]))
 
         def exercise():
             try:
