@@ -437,7 +437,7 @@ async function openHistory(win,refresh=false,older=false){
   const serial=++win.historySerial;win.historyLoading=true;win.historyRefresh.disabled=true;
   try{
     // Flush pending rendering before reading Unicode cells, never raw screen hardcopy bytes.
-    await new Promise(resolve=>win.term.write('',resolve));
+    await new Promise(resolve=>TerminalView.afterWrite(win.term,resolve));
     if(serial!==win.historySerial||!win.element.isConnected)return;
     win.historyText.textContent=win.hasOutput||win.historyArchive?TerminalView.history(win.term,win.historyArchive):'连接后可回看本窗口收到的内容。服务器更早的记录可在终端按 Ctrl+A，再按 [ 查看；按 Esc 返回。';
     requestAnimationFrame(()=>{if(serial===win.historySerial)win.historyScroll.scrollTop=older?0:Math.max(0,win.historyScroll.scrollHeight-win.historyScroll.clientHeight*1.7);});
@@ -463,7 +463,7 @@ async function connectTerminal(win,forwarding,observeOnly=false) {
   try{
     if(!observeOnly){const occupied=await api('/api/sessions/'+win.record.id+'/connection',{});if(occupied.shared)forwarding=occupied.forwarding;}
     if(!win.element.isConnected)return;
-    await new Promise(resolve=>win.term.write('',resolve));
+    await new Promise(resolve=>TerminalView.afterWrite(win.term,resolve));
     if(!win.element.isConnected)return;
     openTransport(win,forwarding,observeOnly);
   }catch(error){toast(error.message,true);}

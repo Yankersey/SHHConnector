@@ -7,6 +7,13 @@
   };
   function resolveTheme(preference,systemDark){return preference==='light'||preference==='dark'?preference:systemDark?'dark':'light';}
   function palette(theme){return {...palettes[theme==='dark'?'dark':'light']};}
+  function afterWrite(term,callback){
+    // xterm's resize() flushes queued writes synchronously. Its flush loop
+    // treats an empty string as the end of the queue and drops its callback
+    // (and later output). An empty byte array is truthy, parses no characters,
+    // and preserves both the parser barrier and the remaining queued writes.
+    term.write(new Uint8Array(0),callback);
+  }
   function installScreenHistory(term,archiveUntil){
     const {_bufferService:bufferService,_inputHandler:input}=term._core;
     const upperRegion=buffer=>buffer.scrollTop===0&&buffer.scrollBottom<term.rows-1;
@@ -117,5 +124,5 @@
     const subscription=term.onScroll(options.changed);
     return {key,dispose(){element.removeEventListener('wheel',wheel,true);subscription.dispose();}};
   }
-  root.TerminalView={resolveTheme,palette,installScreenHistory,history,installScroll,scrollLocal};
+  root.TerminalView={resolveTheme,palette,afterWrite,installScreenHistory,history,installScroll,scrollLocal};
 })(typeof window==='undefined'?globalThis:window);

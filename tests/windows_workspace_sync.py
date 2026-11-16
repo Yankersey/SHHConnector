@@ -165,12 +165,25 @@ def main():
                 wait(desktop, "TerminalView.history(windows.get(%s).term).includes('PHONE')" % identifier, "shared output")
                 assert len(started) == 1, started
                 # Create through the real phone form, including forwarding approval.
+                # Force the layout/connection race: resize the newly restored
+                # desktop terminal while its parser barrier is still queued.
+                evaluate(desktop, """window.testResizedDuringConnect=false;
+                    {const original=TerminalView.afterWrite;
+                     const existing=windows.get(%s).term;
+                     TerminalView.afterWrite=(term,callback)=>{
+                       original(term,callback);
+                       if(term!==existing&&!window.testResizedDuringConnect){
+                         window.testResizedDuringConnect=true;
+                         term.resize(term.cols+1,term.rows);
+                       }
+                     };} true""" % identifier)
                 evaluate(phone, "openNew(); document.querySelector('#new-form').elements.name.value='手机新窗口'; "
                                 "document.querySelector('#new-form').elements.forwarding.value='0'; "
                                 "document.querySelector('#new-form').requestSubmit(); true")
                 wait(phone, "windows.size===2", "phone-created window")
                 wait(desktop, "windows.size===2", "phone window appears on desktop without refresh")
                 wait(desktop, "[...windows.values()].every(w=>w.ws?.readyState===1)", "desktop observes new phone PTY")
+                assert evaluate(desktop, "window.testResizedDuringConnect"), "resize race not exercised"
                 assert len(started) == 2, started
                 assert evaluate(phone, "JSON.stringify([...windows.keys()].sort())") == evaluate(desktop, "JSON.stringify([...windows.keys()].sort())")
                 # Forget through the owner page, with neither screen quit nor new SSH.

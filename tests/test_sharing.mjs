@@ -5,7 +5,24 @@ import vm from 'node:vm';
 const context=vm.createContext({console,setTimeout,clearTimeout,setInterval,clearInterval,TextDecoder,TextEncoder,performance,structuredClone,queueMicrotask,navigator:{userAgent:'node-test',platform:'Linux'}});
 context.self=context;context.window=context;
 for(const path of ['vendor/xterm.js','vendor/addon-serialize.js','mouse-filter.js','terminal-view.js','sharing.js'])vm.runInContext(fs.readFileSync(new URL('../static/'+path,import.meta.url),'utf8'),context);
-const flush=term=>new Promise(resolve=>term.write('',resolve));
+const flush=term=>new Promise(resolve=>context.TerminalView.afterWrite(term,resolve));
+
+// A layout resize can run between queuing a parser barrier and its async
+// callback. Connection setup must still finish and no output may be lost.
+const resizingTerm=new context.Terminal({cols:40,rows:24,allowProposedApi:true});
+let barriers=0,atBarrier='';
+resizingTerm.write('before 中文');
+context.TerminalView.afterWrite(resizingTerm,()=>{
+  barriers++;atBarrier=resizingTerm.buffer.active.getLine(0).translateToString(true);
+});
+resizingTerm.write(' after 🙂');
+resizingTerm.resize(41,25);
+assert.equal(barriers,1,'resize must complete the pending parser barrier');
+assert.equal(atBarrier,'before 中文');
+assert.equal(resizingTerm.buffer.active.getLine(0).translateToString(true),'before 中文 after 🙂');
+await flush(resizingTerm);
+assert.equal(barriers,1,'the callback must run exactly once');
+resizingTerm.dispose();
 function frame(text,seq,snapshot=false){
   const bytes=new TextEncoder().encode(text),out=new Uint8Array(bytes.length+9),header=new DataView(out.buffer);
   header.setUint8(0,snapshot?1:0);header.setUint32(1,Math.floor(seq/4294967296));header.setUint32(5,seq%4294967296);out.set(bytes,9);return out.buffer;
@@ -19,6 +36,14 @@ function client(){
   return {term,serializer,sharing,sent,roles,get filter(){return filter;}};
 }
 const source=client();await flush(source.term);
+// Replay completion also uses a barrier and must survive an immediate resize.
+const replayResize=client();
+replayResize.term.write('replayed output');
+replayResize.sharing.message({type:'replay_end',seq:1});
+replayResize.term.resize(41,25);
+assert.equal(replayResize.sharing.replaying,false);
+assert.equal(replayResize.roles.at(-1).replaying,false);
+replayResize.term.dispose();
 const output='\x1b[?1049h\x1b[2J\x1b[H'+Array.from({length:700},(_,i)=>'\x1b[32m第 '+i+' 行 │ 中文 café é 🙂\x1b[0m\r\n').join('');
 source.sharing.output(frame(output,1));await flush(source.term);
 source.sharing.message({type:'snapshot_request',nonce:'fixture',seq:1,cols:40,rows:24});await flush(source.term);
