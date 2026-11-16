@@ -35,7 +35,7 @@ def main():
         window = webview.create_window("ScreenDesk clipboard test", url=server.origin + "/#token=" + workspace.token,
                                        width=1100, height=760)
         secure_webview(window, server.origin)
-        context = dict(command=None, seen=[])
+        context = dict(command=None, seen=[], network=[], errors=[])
         resources = []
         def response_received(response):
             if "/api/" not in str(response.url):
@@ -67,10 +67,23 @@ def main():
 
         def before_show():
             native = window.native.webview
+            def configure(core):
+                core.ContextMenuRequested += on_context
+                for name, target in (("Network.loadingFailed", context["network"]),
+                                     ("Runtime.exceptionThrown", context["errors"])):
+                    def received(sender, args, target=target):
+                        target.append(json.loads(args.ParameterObjectAsJson))
+                    receiver = core.GetDevToolsProtocolEventReceiver(name)
+                    receiver.DevToolsProtocolEventReceived += received
+                core.CallDevToolsProtocolMethodAsync("Network.enable", "{}")
+                core.CallDevToolsProtocolMethodAsync("Runtime.enable", "{}")
             def initialized(sender, args):
                 if args.IsSuccess:
-                    sender.CoreWebView2.ContextMenuRequested += on_context
-            native.CoreWebView2InitializationCompleted += initialized
+                    configure(sender.CoreWebView2)
+            if native.CoreWebView2 is not None:
+                configure(native.CoreWebView2)
+            else:
+                native.CoreWebView2InitializationCompleted += initialized
         window.events.before_show += before_show
 
         def wait(predicate, label):
@@ -88,14 +101,15 @@ def main():
                     status:document.querySelector('#app-status')?.textContent,
                     toast:document.querySelector('#toast-container')?.textContent,
                     access:document.querySelector('#access-dialog')?.open,
-                    view:typeof TerminalView,sync:typeof WorkspaceSync};
+                    view:typeof TerminalView,sync:typeof WorkspaceSync,
+                    fit:typeof FitAddon,serialize:typeof SerializeAddon,unicode:typeof Unicode11Addon};
                 try{info.views=[...windows.values()].map(w=>({id:w.record.id,
                     state:w.connectionState,socket:w.ws?.readyState,
                     connecting:w.connectingGuard}));}catch(error){info.error=String(error);}
                 return info;
             })()""")
-            raise AssertionError("Timed out: %s; page=%r; last_error=%r; resources=%r" %
-                                 (label, details, last_error, resources))
+            raise AssertionError("Timed out: %s; page=%r; last_error=%r; resources=%r; network=%r; errors=%r" %
+                                 (label, details, last_error, resources, context["network"], context["errors"]))
 
         def exercise():
             # Imports happen after pywebview has initialized pythonnet/WinForms.

@@ -1082,6 +1082,10 @@ class WebSocket:
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    # Chromium opens several asset connections at once; desktop and phone
+    # pages can also load together. Python 3.9's default backlog of five can
+    # reject part of that burst on Windows before serve_forever accepts it.
+    request_queue_size = 64
 
     def server_bind(self):
         # This service only accepts a literal loopback address. HTTPServer's
