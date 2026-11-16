@@ -36,6 +36,12 @@ def main():
                                        width=1100, height=760)
         secure_webview(window, server.origin)
         context = dict(command=None, seen=[])
+        resources = []
+        def response_received(response):
+            if "/api/" not in str(response.url):
+                resources.append((str(response.url).split("#")[0], response.status_code,
+                                  response.headers.get("Content-Type")))
+        window.events.response_received += response_received
         backup = []
         completed = threading.Event()
 
@@ -69,14 +75,27 @@ def main():
 
         def wait(predicate, label):
             deadline = time.monotonic() + 30
+            last_error = None
             while time.monotonic() < deadline:
                 try:
                     if predicate():
                         return
-                except Exception:
-                    pass
+                except Exception as exc:
+                    last_error = repr(exc)
                 time.sleep(.1)
-            raise AssertionError("Timed out: " + label)
+            details = window.evaluate_js("""(()=>{
+                const info={title:document.title,ready:document.readyState,
+                    status:document.querySelector('#app-status')?.textContent,
+                    toast:document.querySelector('#toast-container')?.textContent,
+                    access:document.querySelector('#access-dialog')?.open,
+                    view:typeof TerminalView,sync:typeof WorkspaceSync};
+                try{info.views=[...windows.values()].map(w=>({id:w.record.id,
+                    state:w.connectionState,socket:w.ws?.readyState,
+                    connecting:w.connectingGuard}));}catch(error){info.error=String(error);}
+                return info;
+            })()""")
+            raise AssertionError("Timed out: %s; page=%r; last_error=%r; resources=%r" %
+                                 (label, details, last_error, resources))
 
         def exercise():
             # Imports happen after pywebview has initialized pythonnet/WinForms.
